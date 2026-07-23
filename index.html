@@ -237,6 +237,21 @@
   .authnote{text-align:center;color:var(--muted);font-size:11.5px;line-height:1.5;max-width:340px;margin:14px auto 0}
   .ghostlink{display:block;margin:14px auto 0;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
 
+  /* onboarding taste picker */
+  .chipgrid{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
+  .chippick{border:1px solid var(--line);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:600;background:var(--surface);color:var(--muted)}
+  .chippick.sel{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
+  .pickgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0 4px}
+  .pcard{border:2px solid var(--line);border-radius:12px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--surface);position:relative}
+  .pcard.sel{border-color:var(--accent);background:var(--accent-soft)}
+  .pcard.sel::after{content:"✓";position:absolute;top:6px;right:8px;width:20px;height:20px;border-radius:50%;
+    background:var(--accent);color:var(--on-accent);font-size:12px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .pcard .pt{font-size:11px;line-height:1.25;text-align:center;font-weight:600;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .obdots{display:flex;gap:6px;justify-content:center;margin-top:16px}
+  .obdots span{width:6px;height:6px;border-radius:50%;background:var(--line)}
+  .obdots .on{background:var(--accent)}
+  .obfoot{display:flex;gap:9px;justify-content:center;margin-top:16px;flex-wrap:wrap}
+
   /* reelmates */
   .match{font-family:var(--display);font-weight:700;font-size:13px;color:var(--accent);background:var(--accent-soft);
     border-radius:999px;padding:5px 10px;flex:none;font-variant-numeric:tabular-nums}
@@ -349,7 +364,6 @@
     <button data-nav="profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-3.6 4.4-5.5 8-5.5s6.5 1.9 8 5.5"/></svg>Profile</button>
   </nav>
 
-  <div class="auth" id="auth"></div>
   <div class="overlay" id="overlay" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
   <div class="toast" id="toast" role="status"></div>
 </div>
@@ -450,11 +464,10 @@ let S = load();
 function seed(){
   return {
     profile:null,
-    mates:[0,1,3,4],
-    loved:["parasite","whiplash","spiderverse","madmax"],
-    fine:["avatar","johnwick"],
-    disliked:["barbie"],
-    watch:["dune2","oppenheimer","eeaao","blade2049"],
+    onboarded:false,
+    taste:null,
+    loved:[], fine:[], disliked:[],
+    watch:[],
     custom:[],
     likes:{},
     myFeed:[],
@@ -467,7 +480,15 @@ function load(){
       const s = JSON.parse(raw);
       if(s && s.loved){
         if(!("profile" in s)) s.profile = null;
-        if(!Array.isArray(s.mates)) s.mates = [0,1,3,4];
+        if(!("onboarded" in s)) s.onboarded = true; // returning visitor: don't re-onboard
+        if(!("taste" in s)) s.taste = null;
+        // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
+        // untouched, clear them so real users start with their own list
+        if(s.loved.join() === "parasite,whiplash,spiderverse,madmax" &&
+           s.fine.join() === "avatar,johnwick" && s.disliked.join() === "barbie"){
+          s.loved = []; s.fine = []; s.disliked = []; s.myFeed = [];
+        }
+        delete s.mates;
         return s;
       }
     }
@@ -735,42 +756,30 @@ function render(which){
   hydratePosters($("#scr-"+which));
 }
 
-/* ---------- feed + reelmates ---------- */
-const FRIENDS = [
-  {name:"Priya", handle:"@priyacut", hue:262, bio:"IMAX loyalist. Villeneuve completionist."},
-  {name:"Dex", handle:"@dexframes", hue:22, bio:"Crime sagas and one-take chases."},
-  {name:"Sofia", handle:"@sofiascenes", hue:335, bio:"Hot takes, cold brew, A24 forever."},
-  {name:"Marcus", handle:"@marcusreels", hue:205, bio:"Horror after midnight only."},
-  {name:"Yuki", handle:"@yukiwatches", hue:150, bio:"Ghibli is a personality trait."},
-];
-function mateMatch(i){
-  const theirs = FEED_SEED.filter(f => f.who === i && isRanked(f.movie));
-  if(theirs.length){
-    const d = theirs.reduce((a,f) => a + Math.abs(f.score - scoreOf(f.movie)), 0) / theirs.length;
-    return Math.min(99, Math.max(35, Math.round(97 - d*9)));
-  }
-  return 52 + (FRIENDS[i].hue % 43);
-}
-const FEED_SEED = [
-  {who:0, movie:"dune2", score:9.3, time:"2h", note:"IMAX or it doesn't count. Sandworm scene had me holding my breath.", likes:12},
-  {who:1, movie:"heat", score:8.1, time:"4h", note:"The diner scene alone earns the score.", likes:7},
-  {who:2, movie:"challengers", score:7.4, time:"yesterday", note:"", likes:9},
-  {who:3, movie:"hereditary", score:4.2, time:"yesterday", note:"Objectively well made. Subjectively I will never sleep again.", likes:15},
-  {who:4, movie:"totoro", score:9.6, time:"2d", note:"Comfort cinema, perfected.", likes:21},
-  {who:1, movie:"blade2049", score:8.8, time:"3d", note:"", likes:5},
-  {who:2, movie:"lalaland", score:6.1, time:"3d", note:"Fight me.", likes:31},
-  {who:0, movie:"arrival", score:9.0, time:"4d", note:"Rewatch. Hits different the second time — that's the point.", likes:11},
-];
-function feedItemHTML(f, idx, mine){
+/* ---------- feed + reelmates (real accounts only) ----------
+   BACKEND is the seam for the Supabase integration: when `enabled` flips on,
+   people search, follows, and the shared feed run against the real database.
+   Until then those surfaces show an honest "accounts are launching" state —
+   no fake users, no fake activity. */
+const BACKEND = {
+  enabled: false,
+  searchPeople(q, cb){ cb(null); },   // -> [{id, handle, name, hue, ranked}] | null
+  follow(id, cb){ cb(false); },
+  unfollow(id, cb){ cb(false); },
+  mates(cb){ cb([]); },
+  feed(cb){ cb([]); },
+};
+function feedItemHTML(f, idx){
   const m = getMovie(f.movie); if(!m) return "";
-  const who = mine ? {name:"You", hue:(S.profile ? S.profile.hue : 172)} : FRIENDS[f.who];
-  const likeKey = mine ? "me"+idx : "fr"+idx;
+  const who = f.who || {name:"You", hue:(S.profile ? S.profile.hue : 172)};
+  const mine = !f.who;
+  const likeKey = "me"+idx;
   const liked = !!S.likes[likeKey];
   const likeN = (f.likes||0) + (liked?1:0);
   return `<article class="fitem">
     <div class="fhead">
       <div class="avatar" style="background:hsl(${who.hue} 45% 45%)">${esc(who.name[0])}</div>
-      <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${esc(f.time)} · #${f.rank ? f.rank : "—"} on their list</span></div>
+      <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${esc(f.time)} · #${f.rank ? f.rank : "—"} on ${mine ? "your" : "their"} list</span></div>
       ${scoreHTML(f.score)}
     </div>
     <button class="fbody" data-open="${m.id}" style="width:100%;text-align:left;border:none">
@@ -787,94 +796,83 @@ function feedItemHTML(f, idx, mine){
     </div>
   </article>`;
 }
-let feedTab = "activity";
+let feedTab = "activity", mateQuery = "", mateResults = null, mateState = "idle", mateT = null;
 function renderFeed(){
   const segs = `<div class="segs">
     <button class="seg ${feedTab==="activity"?"cur":""}" data-ftab="activity">Activity</button>
-    <button class="seg ${feedTab==="mates"?"cur":""}" data-ftab="mates">Reelmates (${S.mates.length})</button>
+    <button class="seg ${feedTab==="mates"?"cur":""}" data-ftab="mates">Reelmates</button>
   </div>`;
   let body;
   if(feedTab === "activity"){
-    const mine = S.myFeed.map((f,i) => feedItemHTML(f, i, true)).join("");
-    const seedHTML = FEED_SEED
-      .map((f,i) => ({f,i}))
-      .filter(x => S.mates.includes(x.f.who))
-      .map(x => feedItemHTML({...x.f, rank:x.f.rank || (x.i%7)+2}, x.i, false)).join("");
-    body = (mine + seedHTML) ? `<div class="fgrid">${mine + seedHTML}</div>` :
+    const mine = S.myFeed.map((f,i) => feedItemHTML(f, i)).join("");
+    body = mine ? `<div class="fgrid">${mine}</div>` :
       `<div class="empty"><div class="big" aria-hidden="true">🎞️</div>
-        <p>Your feed is quiet. Add some Reelmates — your people in the audience — and their rankings show up here.</p>
-        <button class="pillbtn acc" data-ftabgo="mates">Find Reelmates</button></div>`;
+        <p>Your feed starts with you. Rank a movie and it lands here — and once you add Reelmates, their rankings join the stream.</p>
+        <button class="pillbtn acc" data-gosearch>Rank your first movie</button></div>`;
     body = `<h1 class="h1">Fresh takes</h1>
-      <p class="sub">What your Reelmates have been watching — and where it landed on their lists.</p>${segs}${body}`;
+      <p class="sub">Your rankings and your Reelmates' — as they happen.</p>${segs}${body}`;
   } else {
-    const row = (i) => {
-      const fr = FRIENDS[i], on = S.mates.includes(i);
-      return `<div class="row">
-        <div class="avatar" style="background:hsl(${fr.hue} 45% 45%)">${esc(fr.name[0])}</div>
-        <button class="meta" data-mate="${i}" style="text-align:left;min-width:0">
-          <span class="t">${esc(fr.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">${esc(fr.handle)}</span></span>
-          <span class="d">${esc(fr.bio)}</span>
-        </button>
-        <span class="match">${mateMatch(i)}%</span>
-        <button class="pillbtn ${on?"soft":"acc"}" data-follow="${i}">${on?"✓":"Add"}</button>
-      </div>`;
-    };
-    const mine = FRIENDS.map((_,i)=>i).filter(i => S.mates.includes(i));
-    const sugg = FRIENDS.map((_,i)=>i).filter(i => !S.mates.includes(i));
+    let results;
+    if(!BACKEND.enabled){
+      results = `<div class="empty" style="padding:30px 24px"><div class="big" aria-hidden="true">🎟️</div>
+        <p><b>Reelmates are real people — no bots, no demo accounts.</b><br>
+        Account sign-up is switching on shortly. Meanwhile, send the site to a friend so there's someone to find:</p>
+        <button class="pillbtn acc" id="inviteBtn">Copy invite link</button></div>`;
+    } else if(mateState === "loading"){
+      results = `<div class="empty" style="padding:24px"><p>Searching people…</p></div>`;
+    } else if(Array.isArray(mateResults)){
+      results = mateResults.length ? `<div class="card">${mateResults.map(p => `<div class="row">
+          <div class="avatar" style="background:hsl(${p.hue} 45% 45%)">${esc((p.name[0]||"?").toUpperCase())}</div>
+          <span class="meta"><span class="t">${esc(p.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">@${esc(p.handle)}</span></span>
+          <span class="d">${p.ranked} movies ranked</span></span>
+          <button class="pillbtn ${p.following?"soft":"acc"}" data-pfollow="${esc(p.id)}">${p.following ? "Reelmates ✓" : "Add"}</button>
+        </div>`).join("")}</div>`
+        : `<div class="empty" style="padding:24px"><p>Nobody matching “${esc(mateQuery)}” yet. Handles are exact — ask your friend for theirs.</p></div>`;
+    } else {
+      results = `<div class="empty" style="padding:24px"><p>Search by name or @handle to find people.</p></div>`;
+    }
     body = `<h1 class="h1">Reelmates</h1>
-      <p class="sub">Your people in the audience. The % is your taste match — how closely your scores agree on movies you've both ranked.</p>
+      <p class="sub">Your people in the audience. Find them by name or @handle and follow their rankings.</p>
       ${segs}
-      ${mine.length ? `<div class="sechead">Your reelmates</div><div class="card">${mine.map(row).join("")}</div>` : ""}
-      ${sugg.length ? `<div class="sechead">Suggested</div><div class="card">${sugg.map(row).join("")}</div>` : ""}`;
+      <div class="searchbar">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
+        <input id="mq" type="search" placeholder="Find people by name or @handle…" value="${esc(mateQuery)}" autocomplete="off" ${BACKEND.enabled?"":"disabled"}>
+      </div>
+      ${results}`;
   }
   $("#feedWrap").innerHTML = body;
   $("#feedWrap").querySelectorAll("[data-ftab]").forEach(b => b.addEventListener("click", () => { feedTab = b.dataset.ftab; renderFeed(); }));
-  $("#feedWrap").querySelectorAll("[data-ftabgo]").forEach(b => b.addEventListener("click", () => { feedTab = b.dataset.ftabgo; renderFeed(); }));
-  $("#feedWrap").querySelectorAll("[data-follow]").forEach(b => b.addEventListener("click", () => {
-    const i = +b.dataset.follow;
-    if(S.mates.includes(i)){ S.mates = S.mates.filter(x => x !== i); toast(`Removed ${FRIENDS[i].name}`); }
-    else { S.mates.push(i); toast(`${FRIENDS[i].name} is now a Reelmate 🎟️`); }
-    save(); renderFeed();
+  const inv = $("#inviteBtn");
+  if(inv) inv.addEventListener("click", () => {
+    const link = location.origin + location.pathname;
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(link).then(() => toast("Invite link copied 🎟️"), () => toast(link));
+    else toast(link);
+  });
+  const mq = $("#mq");
+  if(mq && BACKEND.enabled){
+    mq.addEventListener("input", () => {
+      mateQuery = mq.value;
+      clearTimeout(mateT);
+      const qq = mateQuery.trim().replace(/^@+/,"");
+      if(!qq){ mateResults = null; mateState = "idle"; renderFeed(); return; }
+      mateState = "loading";
+      mateT = setTimeout(() => BACKEND.searchPeople(qq, res => {
+        mateResults = res || []; mateState = "done";
+        if(cur === "feed" && feedTab === "mates"){ const pos = $("#mq") ? $("#mq").selectionStart : null; renderFeed(); const ni = $("#mq"); if(ni){ ni.focus(); if(pos!==null) ni.setSelectionRange(pos,pos); } }
+      }), 400);
+      renderFeed();
+      const ni = $("#mq"); ni.focus(); ni.setSelectionRange(ni.value.length, ni.value.length);
+    });
+  }
+  $("#feedWrap").querySelectorAll("[data-pfollow]").forEach(b => b.addEventListener("click", () => {
+    const id = b.dataset.pfollow;
+    const p = (mateResults||[]).find(x => x.id === id); if(!p) return;
+    const done = ok => { if(!ok){ toast("Couldn't update — try again"); return; }
+      p.following = !p.following; toast(p.following ? `${p.name} is now a Reelmate 🎟️` : `Removed ${p.name}`); renderFeed(); };
+    p.following ? BACKEND.unfollow(id, done) : BACKEND.follow(id, done);
   }));
-  $("#feedWrap").querySelectorAll("[data-mate]").forEach(b => b.addEventListener("click", () => openMate(+b.dataset.mate)));
   wireCommon($("#feedWrap"));
-}
-function openMate(i){
-  const fr = FRIENDS[i], on = S.mates.includes(i), match = mateMatch(i);
-  const theirs = FEED_SEED.filter(f => f.who === i);
-  const both = theirs.filter(f => isRanked(f.movie));
-  openSheet(`
-    <div class="dhead">
-      <div class="avatar" style="background:hsl(${fr.hue} 45% 45%);width:74px;height:74px;font-size:26px">${esc(fr.name[0])}</div>
-      <div class="meta">
-        <h2>${esc(fr.name)}</h2>
-        <div class="d">${esc(fr.handle)} · ${esc(fr.bio)}</div>
-        <div class="dactions">
-          <button class="pillbtn ${on?"soft":"acc"}" data-mfollow="${i}">${on ? "Reelmates ✓" : "Add Reelmate"}</button>
-        </div>
-      </div>
-      <div class="matchring" style="--pct:${match}"><span>${match}%</span></div>
-    </div>
-    ${both.length ? `<div class="sechead">You both ranked</div><div class="card" style="padding:6px 14px">
-      ${both.map(f => { const m = getMovie(f.movie); return `<div class="bothrow">
-        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.title)}</span>
-        <span class="score sc ${scoreClass(scoreOf(f.movie))}" title="Your score">${scoreOf(f.movie).toFixed(1)}</span>
-        <span class="score sc ${scoreClass(f.score)}" title="${esc(fr.name)}'s score">${f.score.toFixed(1)}</span>
-      </div>`; }).join("")}
-      <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>${esc(fr.name.toLowerCase())}</span></div>
-    </div>` : ""}
-    <div class="sechead">Recent rankings</div>
-    <div class="card">${theirs.map(f => { const m = getMovie(f.movie); return `<button class="row" data-open="${m.id}">
-      ${posterHTML(m,"p-sm")}
-      <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${m.year} · ${esc(m.genre)}</span></span>
-      ${scoreHTML(f.score)}</button>`; }).join("")}</div>`);
-  sheet.querySelectorAll("[data-mfollow]").forEach(b => b.addEventListener("click", () => {
-    if(S.mates.includes(i)) S.mates = S.mates.filter(x => x !== i);
-    else { S.mates.push(i); toast(`${fr.name} is now a Reelmate 🎟️`); }
-    save(); openMate(i); if(cur === "feed") renderFeed();
-  }));
-  sheet.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.open)));
-  hydratePosters(sheet);
 }
 
 /* ---------- rankings ---------- */
@@ -964,7 +962,7 @@ function renderSearch(){
   const pool = [...DB.map(a => MOVIES[a[0]]), ...S.custom];
   const list = q
     ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
-    : pool.filter(m => !isRanked(m.id)).slice(0, 12);
+    : pool.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 12);
   const rows = list.map(movieRowHTML).join("");
   const trendRows = (!q && Array.isArray(TREND))
     ? TREND.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
@@ -984,7 +982,7 @@ function renderSearch(){
       <input id="q" type="search" placeholder="Search any movie, director, genre…" value="${esc(query)}" autocomplete="off">
     </div>
     ${trendRows ? `<div class="sechead">Popular right now</div><div class="card">${trendRows}</div>` : ""}
-    ${!q ? `<div class="sechead">Suggestions for you</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
+    ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
     ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}
     ${liveHTML}
     <div class="sechead">Missing something?</div>
@@ -1045,20 +1043,28 @@ function renderProfile(){
   const topGenres = Object.entries(gc).sort((a,b)=>b[1]-a[1]).slice(0,5);
   const n = ids.length || 1;
   const dist = [["Loved", S.loved.length, "var(--good)"],["Fine", S.fine.length, "var(--mid)"],["Not for me", S.disliked.length, "var(--bad)"]];
-  const P = S.profile || {name:"Guest", handle:"@guest", hue:172, provider:null};
+  const P = S.profile || {name:"Guest", handle:"@guest", hue:172};
+  const guest = !S.profile;
   $("#profileWrap").innerHTML = `
     <div class="phead">
       <div class="avatar" style="background:hsl(${P.hue} 45% 38%)">${esc((P.name[0]||"?").toUpperCase())}</div>
       <div style="flex:1;min-width:0"><div class="pname">${esc(P.name)}</div>
-        <div class="phandle">${esc(P.handle)}${P.provider ? ` · via ${esc(P.provider)}` : ""} · member since 2026</div></div>
-      <button class="pillbtn" id="editBtn">Edit</button>
+        <div class="phandle">${esc(P.handle)}${guest ? " · guest mode" : ""}</div></div>
+      <button class="pillbtn ${guest?"acc":""}" id="editBtn">${guest ? "Set up profile" : "Edit"}</button>
     </div>
+    ${guest ? `<div class="card" style="padding:12px 14px;margin-bottom:14px"><span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5">
+      You're in guest mode — everything saves to this browser. Cloud accounts (sync + Reelmates) are switching on shortly, and your list will carry over.</span></div>` : ""}
     <div class="stats" style="grid-template-columns:repeat(4,1fr)">
       <div class="stat"><div class="n">${ids.length}</div><div class="l">Ranked</div></div>
-      <div class="stat"><div class="n">${S.mates.length}</div><div class="l">Mates</div></div>
+      <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
       <div class="stat"><div class="n">${S.watch.length}</div><div class="l">Queued</div></div>
       <div class="stat"><div class="n">${avg}</div><div class="l">Avg</div></div>
     </div>
+    <div class="sechead" style="display:flex;justify-content:space-between;align-items:center">Your taste
+      <button class="pillbtn" id="tasteBtn" style="padding:5px 11px;font-size:11.5px">${S.taste ? "Edit" : "Set up"}</button></div>
+    ${S.taste && (S.taste.genres.length || S.taste.dirs.length)
+      ? `<div class="chips" style="margin-bottom:14px">${[...S.taste.genres, ...S.taste.dirs].map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>`
+      : `<div class="card" style="padding:12px 14px;margin-bottom:14px"><span class="d" style="color:var(--muted);font-size:12.5px">No taste set yet — pick genres and filmmakers to fuel your suggestions.</span></div>`}
     <div class="sechead">Taste breakdown</div>
     <div class="card" style="padding:14px">
       ${dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
@@ -1079,8 +1085,9 @@ function renderProfile(){
       <button class="pillbtn" id="logoutBtn">Log out</button>
     </div>
     <button class="danger" id="resetBtn">Reset all my data</button>`;
-  $("#editBtn").addEventListener("click", () => openAccountForm("edit"));
-  $("#logoutBtn").addEventListener("click", () => { S.profile = null; save(); showAuth(); });
+  $("#editBtn").addEventListener("click", () => openAccountForm());
+  $("#tasteBtn").addEventListener("click", () => { O = null; openOnboarding(1); });
+  $("#logoutBtn").addEventListener("click", () => { S.profile = null; save(); renderProfile(); toast("Back to guest mode"); });
   $("#exportBtn").addEventListener("click", () => {
     const text = JSON.stringify({reeli:1, app:S, posters:POSTERS.cache});
     if(navigator.clipboard && navigator.clipboard.writeText){
@@ -1095,7 +1102,9 @@ function renderProfile(){
       if(!d || d.reeli !== 1 || !d.app || !Array.isArray(d.app.loved)) throw 0;
       S = d.app;
       if(!("profile" in S)) S.profile = null;
-      if(!Array.isArray(S.mates)) S.mates = [0,1,3,4];
+      if(!("onboarded" in S)) S.onboarded = true;
+      if(!("taste" in S)) S.taste = null;
+      delete S.mates;
       Object.assign(POSTERS.cache, d.posters || {});
       save(); savePosters(); render(cur); toast("Backup restored 🎬");
     }catch(e){ toast("That doesn't look like a Reeli backup"); }
@@ -1111,87 +1120,111 @@ function renderProfile(){
   $("#resetBtn").addEventListener("click", () => {
     if(confirm("Wipe your rankings, watchlist and activity? This can't be undone.")){
       localStorage.removeItem(KEY); localStorage.removeItem("reeli-posters");
-      S = seed(); S.loved=[];S.fine=[];S.disliked=[];S.watch=[];S.myFeed=[];S.likes={};
-      save(); showAuth();
+      S = seed(); save(); nav("feed"); openOnboarding(0);
     }
   });
   wireCommon($("#profileWrap"));
 }
 
-/* ---------- account / auth (demo: lives in this browser only) ---------- */
+/* ---------- onboarding: Beli-style taste picker (guest-first) ---------- */
 const AVATAR_HUES = [172, 262, 22, 335, 205, 45];
-let authPick = {hue:172, provider:null};
-function showAuth(){
-  authPick = {hue:172, provider:null};
-  renderAuth();
-  $("#auth").classList.add("on");
+const OB_GENRES = ["Drama","Sci-Fi","Crime","Thriller","Comedy","Animation","Horror","Action","Romance","Fantasy","Mystery","War","Adventure","Western"];
+const OB_MAKERS = ["Christopher Nolan","Martin Scorsese","Steven Spielberg","Quentin Tarantino","Denis Villeneuve","David Fincher","Hayao Miyazaki","Stanley Kubrick","Coen Brothers","Wes Anderson","Alfred Hitchcock","Ridley Scott","James Cameron","Greta Gerwig","Jordan Peele","Damien Chazelle"];
+let O = null;
+function tasteScore(m){
+  if(!S.taste) return 0;
+  return (S.taste.genres.includes(m.genre) ? 2 : 0) + (S.taste.dirs.includes(m.dir) ? 3 : 0);
 }
-function hideAuth(){ $("#auth").classList.remove("on"); }
-function socialBtn(provider, bg){
-  return `<button class="socialbtn ${authPick.provider===provider?"picked":""}" data-prov="${provider}">
-    <span class="mark" style="background:${bg}">${provider[0]}</span>Continue with ${provider}</button>`;
+function openOnboarding(step){
+  O = O || {
+    genres: new Set(S.taste ? S.taste.genres : []),
+    dirs: new Set(S.taste ? S.taste.dirs : []),
+    movies: new Set(),
+  };
+  obStep(step);
 }
-function renderAuth(){
-  $("#auth").innerHTML = `
-    <div class="hero">
-      <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="2.2"/>
-        <circle cx="12" cy="7.6" r="1.7" fill="var(--accent)"/><circle cx="12" cy="16.4" r="1.7" fill="var(--accent)"/>
-        <circle cx="7.6" cy="12" r="1.7" fill="var(--accent)"/><circle cx="16.4" cy="12" r="1.7" fill="var(--accent)"/>
-      </svg>
-      <span class="wordmark">Reeli</span>
-      <p class="tagline">Rank every movie you've ever seen — one head-to-head at a time.</p>
-    </div>
-    <div class="feats">
-      <div class="feat"><span class="fdot">⚔</span><span><b>No star ratings.</b> Every score is earned in head-to-head matchups.</span></div>
-      <div class="feat"><span class="fdot">🌍</span><span><b>The whole catalog.</b> Live search across a worldwide movie database.</span></div>
-      <div class="feat"><span class="fdot">🎟</span><span><b>Reelmates.</b> Your people in the audience — see how your tastes match up.</span></div>
-    </div>
-    <div class="authcard">
-      ${socialBtn("Google","#4285F4")}
-      ${socialBtn("Apple","#333")}
-      ${socialBtn("Facebook","#1877F2")}
-      <div class="ordiv">or sign up with email</div>
-      <input class="field" id="aname" placeholder="Display name" maxlength="24" autocomplete="off">
-      <input class="field" id="ahandle" placeholder="@handle (optional)" maxlength="20" autocomplete="off">
-      <input class="field" id="aemail" type="email" placeholder="Email (optional)" autocomplete="off">
-      <div class="swatches" role="radiogroup" aria-label="Avatar color">
-        ${AVATAR_HUES.map(h => `<button class="swatch ${authPick.hue===h?"cur":""}" data-hue="${h}" style="background:hsl(${h} 45% 45%)" aria-label="Avatar color"></button>`).join("")}
+function obDots(n){ return `<div class="obdots">${[0,1,2,3].map(i => `<span class="${i<=n?"on":""}"></span>`).join("")}</div>`; }
+function obStep(n){
+  if(n === 0){
+    openSheet(`
+      <div style="display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;padding:10px 0 4px">
+        <svg width="44" height="44" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="2.2"/>
+          <circle cx="12" cy="7.6" r="1.7" fill="var(--accent)"/><circle cx="12" cy="16.4" r="1.7" fill="var(--accent)"/>
+          <circle cx="7.6" cy="12" r="1.7" fill="var(--accent)"/><circle cx="16.4" cy="12" r="1.7" fill="var(--accent)"/>
+        </svg>
+        <span class="wordmark" style="font-size:30px">Reeli</span>
+        <p class="sub" style="margin:0;max-width:32ch">No star ratings here. Every movie earns its score in head-to-head matchups against your own list.</p>
+        <p class="sub" style="margin:0;max-width:32ch">Tell us your taste and we'll set up your first rankings — takes under a minute.</p>
       </div>
-      <button class="pillbtn acc" id="createBtn" style="padding:12px;font-size:14.5px">${authPick.provider ? "Finish signing up via "+authPick.provider : "Create account"}</button>
-    </div>
-    <button class="ghostlink" id="guestBtn">Just let me in as a guest</button>
-    <p class="authnote">Demo build: your account and rankings live only in this browser (localStorage). Nothing is sent anywhere, and the social buttons simulate sign-in without contacting those services.</p>`;
-  const nameEl = $("#aname"), handleEl = $("#ahandle"), emailEl = $("#aemail");
-  $("#auth").querySelectorAll("[data-prov]").forEach(b => b.addEventListener("click", () => {
-    const keep = {name:nameEl.value, handle:handleEl.value, email:emailEl.value};
-    authPick.provider = authPick.provider === b.dataset.prov ? null : b.dataset.prov;
-    renderAuth();
-    $("#aname").value = keep.name; $("#ahandle").value = keep.handle; $("#aemail").value = keep.email;
-    if(authPick.provider){ toast(authPick.provider + " connected (demo)"); $("#aname").focus(); }
+      <div class="obfoot">
+        <button class="pillbtn acc" data-ob="1" style="padding:11px 22px">Set up my taste</button>
+        <button class="pillbtn" data-ob="skip">Skip — just let me in</button>
+      </div>${obDots(0)}`);
+  } else if(n === 1){
+    openSheet(`
+      <div class="step">Your taste · 1 of 3</div>
+      <h1 class="h1" style="text-align:center;margin-top:12px">What do you love watching?</h1>
+      <p class="sub" style="text-align:center">Pick as many as you like — this fuels your suggestions.</p>
+      <div class="chipgrid">${OB_GENRES.map(g => `<button class="chippick ${O.genres.has(g)?"sel":""}" data-g="${g}">${g}</button>`).join("")}</div>
+      <div class="obfoot"><button class="pillbtn acc" data-ob="2" style="padding:11px 22px">Next</button><button class="pillbtn" data-ob="skip">Skip the rest</button></div>${obDots(1)}`);
+    sheet.querySelectorAll("[data-g]").forEach(b => b.addEventListener("click", () => {
+      const g = b.dataset.g; O.genres.has(g) ? O.genres.delete(g) : O.genres.add(g); b.classList.toggle("sel");
+    }));
+  } else if(n === 2){
+    openSheet(`
+      <div class="step">Your taste · 2 of 3</div>
+      <h1 class="h1" style="text-align:center;margin-top:12px">Filmmakers you rate</h1>
+      <p class="sub" style="text-align:center">Directors and writer-directors whose work you seek out.</p>
+      <div class="chipgrid">${OB_MAKERS.map(d => `<button class="chippick ${O.dirs.has(d)?"sel":""}" data-d="${esc(d)}">${esc(d)}</button>`).join("")}</div>
+      <div class="obfoot"><button class="pillbtn acc" data-ob="3" style="padding:11px 22px">Next</button><button class="pillbtn" data-ob="skip">Skip the rest</button></div>${obDots(2)}`);
+    sheet.querySelectorAll("[data-d]").forEach(b => b.addEventListener("click", () => {
+      const d = b.dataset.d; O.dirs.has(d) ? O.dirs.delete(d) : O.dirs.add(d); b.classList.toggle("sel");
+    }));
+  } else if(n === 3){
+    const cands = DB.map(a => MOVIES[a[0]])
+      .filter(m => !isRanked(m.id))
+      .sort((a,b) => ((O.genres.has(b.genre)?2:0)+(O.dirs.has(b.dir)?3:0)) - ((O.genres.has(a.genre)?2:0)+(O.dirs.has(a.dir)?3:0)))
+      .slice(0, 18);
+    openSheet(`
+      <div class="step">Your taste · 3 of 3</div>
+      <h1 class="h1" style="text-align:center;margin-top:12px">Tap a few you've seen and loved</h1>
+      <p class="sub" style="text-align:center">They become your first ranked movies — first tap ranks highest. You can re-rank anytime.</p>
+      <div class="pickgrid">${cands.map(m => `<button class="pcard" data-m="${m.id}">${posterHTML(m,"p-md")}<span class="pt">${esc(m.title)}</span></button>`).join("")}</div>
+      <div class="obfoot"><button class="pillbtn acc" data-ob="done" style="padding:11px 22px">Finish setup</button><button class="pillbtn" data-ob="skip">Skip</button></div>${obDots(3)}`);
+    sheet.querySelectorAll("[data-m]").forEach(b => b.addEventListener("click", () => {
+      const id = b.dataset.m; O.movies.has(id) ? O.movies.delete(id) : O.movies.add(id); b.classList.toggle("sel");
+    }));
+  }
+  sheet.querySelectorAll("[data-ob]").forEach(b => b.addEventListener("click", () => {
+    const v = b.dataset.ob;
+    if(v === "skip" || v === "done") finishOnboarding(v === "done");
+    else obStep(+v);
   }));
-  $("#auth").querySelectorAll("[data-hue]").forEach(b => b.addEventListener("click", () => {
-    authPick.hue = +b.dataset.hue;
-    $("#auth").querySelectorAll(".swatch").forEach(s => s.classList.toggle("cur", +s.dataset.hue === authPick.hue));
-  }));
-  $("#createBtn").addEventListener("click", () => {
-    const name = nameEl.value.trim();
-    if(!name){ nameEl.focus(); nameEl.placeholder = "Display name — required"; return; }
-    let handle = handleEl.value.trim().replace(/^@+/,"");
-    if(!handle) handle = name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14) || "cinephile";
-    S.profile = {name, handle:"@"+handle, hue:authPick.hue, provider:authPick.provider, email:emailEl.value.trim()||null};
-    save(); hideAuth(); nav("feed");
-    toast(`Welcome to Reeli, ${name} 🎬`);
-  });
-  $("#guestBtn").addEventListener("click", () => {
-    S.profile = {name:"Guest", handle:"@guest", hue:172, provider:null, email:null};
-    save(); hideAuth(); nav("feed");
-  });
+}
+function finishOnboarding(applyPicks){
+  if(applyPicks || O.genres.size || O.dirs.size) S.taste = {genres:[...O.genres], dirs:[...O.dirs]};
+  let added = 0;
+  if(applyPicks){
+    for(const id of O.movies){ if(!isRanked(id)){ S.loved.push(id); added++; } }
+    for(const id of [...O.movies].reverse()){
+      if(bucketOf(id) === "loved")
+        S.myFeed.unshift({movie:id, score:scoreOf(id), time:"just now", note:"", likes:0, rank:rankOf(id)});
+    }
+    S.myFeed = S.myFeed.slice(0, 6);
+  }
+  S.onboarded = true;
+  O = null;
+  save(); closeSheet();
+  nav(added ? "ranks" : "feed");
+  toast(added ? `${added} movie${added>1?"s":""} on the board — welcome to Reeli 🎬` : "Welcome to Reeli 🎬");
 }
 function openAccountForm(){
-  const P = S.profile; if(!P) return;
+  const isNew = !S.profile;
+  const P = S.profile || {name:"", handle:"@", hue:172};
   openSheet(`
-    <h1 class="h1">Edit profile</h1>
+    <h1 class="h1">${isNew ? "Set up your profile" : "Edit profile"}</h1>
+    ${isNew ? `<p class="sub">This personalizes your device. Real accounts with cloud sync are switching on shortly — your profile and rankings will carry over.</p>` : ""}
     <div style="display:grid;gap:10px;margin-top:10px">
       <input class="field" id="ename" value="${esc(P.name)}" maxlength="24">
       <input class="field" id="ehandle" value="${esc(P.handle)}" maxlength="20">
@@ -1206,9 +1239,11 @@ function openAccountForm(){
   $("#ecancel").addEventListener("click", closeSheet);
   $("#esave").addEventListener("click", () => {
     const name = $("#ename").value.trim() || P.name;
-    let handle = $("#ehandle").value.trim().replace(/^@+/,"") || P.handle.slice(1);
+    if(!name){ $("#ename").focus(); $("#ename").placeholder = "Name — required"; return; }
+    let handle = $("#ehandle").value.trim().replace(/^@+/,"") || P.handle.slice(1) ||
+      name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14) || "cinephile";
     S.profile = {...P, name, handle:"@"+handle, hue};
-    save(); closeSheet(); renderProfile(); toast("Profile updated");
+    save(); closeSheet(); renderProfile(); toast(isNew ? `Welcome, ${name} 🎬` : "Profile updated");
   });
 }
 
@@ -1434,5 +1469,5 @@ document.addEventListener("keydown", e => {
 S.watch = S.watch.filter(id => getMovie(id));
 updateBadge();
 nav("feed");
-if(!S.profile) showAuth();
+if(!S.onboarded) openOnboarding(0);
 </script>
