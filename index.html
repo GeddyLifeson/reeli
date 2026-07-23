@@ -1,0 +1,1399 @@
+<meta charset="utf-8">
+<title>Reeli — rank every movie you've seen</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root{
+    --bg:#EFF1EE; --frame:#E4E8E3; --surface:#FFFFFF; --surface2:#F4F6F3;
+    --ink:#16211E; --muted:#5C6B66; --line:#DCE2DE;
+    --accent:#0E6B5C; --accent-soft:#E0EEEA; --on-accent:#F2FBF8;
+    --good:#1F9D57; --good-soft:#E2F3E8;
+    --mid:#D9940E;  --mid-soft:#F8EED9;
+    --bad:#D14545;  --bad-soft:#F9E4E4;
+    --shadow:0 10px 30px rgba(22,33,30,.10);
+    --display:"Futura","Futura PT","Avenir Next","Century Gothic","Trebuchet MS",system-ui,sans-serif;
+    --body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0C1210; --frame:#090E0C; --surface:#131B18; --surface2:#182220;
+      --ink:#E8EFEA; --muted:#8FA39B; --line:#24302B;
+      --accent:#3ECBA5; --accent-soft:#173229; --on-accent:#06231B;
+      --good:#34C171; --good-soft:#12291C;
+      --mid:#E8A93C;  --mid-soft:#2E2412;
+      --bad:#E4635F;  --bad-soft:#301616;
+      --shadow:0 10px 30px rgba(0,0,0,.45);
+    }
+  }
+  :root[data-theme="light"]{
+    --bg:#EFF1EE; --frame:#E4E8E3; --surface:#FFFFFF; --surface2:#F4F6F3;
+    --ink:#16211E; --muted:#5C6B66; --line:#DCE2DE;
+    --accent:#0E6B5C; --accent-soft:#E0EEEA; --on-accent:#F2FBF8;
+    --good:#1F9D57; --good-soft:#E2F3E8;
+    --mid:#D9940E;  --mid-soft:#F8EED9;
+    --bad:#D14545;  --bad-soft:#F9E4E4;
+    --shadow:0 10px 30px rgba(22,33,30,.10);
+  }
+  :root[data-theme="dark"]{
+    --bg:#0C1210; --frame:#090E0C; --surface:#131B18; --surface2:#182220;
+    --ink:#E8EFEA; --muted:#8FA39B; --line:#24302B;
+    --accent:#3ECBA5; --accent-soft:#173229; --on-accent:#06231B;
+    --good:#34C171; --good-soft:#12291C;
+    --mid:#E8A93C;  --mid-soft:#2E2412;
+    --bad:#E4635F;  --bad-soft:#301616;
+    --shadow:0 10px 30px rgba(0,0,0,.45);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{background:var(--frame);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased}
+  button{font-family:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer}
+  button:focus-visible,input:focus-visible,a:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
+  input{font-family:inherit}
+  @media (prefers-reduced-motion: reduce){ *,*::before,*::after{animation:none!important;transition:none!important} }
+
+  .app{max-width:432px;margin:0 auto;min-height:100dvh;background:var(--bg);
+    display:flex;flex-direction:column;position:relative;
+    border-left:1px solid var(--line);border-right:1px solid var(--line)}
+
+  /* header */
+  .top{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);
+    padding:14px 18px 12px;display:flex;align-items:center;justify-content:space-between}
+  .logo{display:flex;align-items:center;gap:9px}
+  .logo svg{display:block}
+  .wordmark{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:.5px;color:var(--accent)}
+  .screen-tag{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:600}
+
+  /* screens */
+  .screens{flex:1;padding:0 0 92px}
+  .screen{display:none}
+  .screen.on{display:block;animation:fade .18s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  .pad{padding:16px 18px}
+  .h1{font-family:var(--display);font-weight:700;font-size:24px;margin:4px 0 2px;text-wrap:balance}
+  .sub{color:var(--muted);font-size:13.5px;margin:0 0 14px;line-height:1.45}
+
+  /* bottom nav */
+  .nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:432px;z-index:30;
+    background:var(--surface);border-top:1px solid var(--line);
+    display:grid;grid-template-columns:repeat(5,1fr);align-items:end;padding:6px 6px calc(8px + env(safe-area-inset-bottom))}
+  .nav button{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;color:var(--muted);font-size:10.5px;font-weight:600;letter-spacing:.02em;border-radius:10px}
+  .badge{position:absolute;top:2px;left:calc(50% + 4px);background:var(--accent);color:var(--on-accent);
+    font-size:9.5px;font-weight:700;border-radius:999px;min-width:16px;height:16px;
+    display:flex;align-items:center;justify-content:center;padding:0 4px}
+  .badge:empty{display:none}
+  .nav button.cur{color:var(--accent)}
+  .nav svg{width:22px;height:22px}
+  .nav .plus{margin:-26px auto 0;width:54px;height:54px;border-radius:50%;background:var(--accent);color:var(--on-accent);
+    display:flex;align-items:center;justify-content:center;box-shadow:var(--shadow);padding:0}
+  .nav .plus svg{width:26px;height:26px}
+
+  /* posters */
+  .poster{border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#fff;flex:none;position:relative;overflow:hidden;text-shadow:0 1px 4px rgba(0,0,0,.35)}
+  .poster::after{content:"";position:absolute;inset:0;background:
+    linear-gradient(160deg,rgba(255,255,255,.22),rgba(255,255,255,0) 45%),
+    linear-gradient(0deg,rgba(0,0,0,.28),rgba(0,0,0,0) 55%)}
+  .poster .init{font-family:var(--display);font-weight:700;position:relative;z-index:1}
+  .poster .pimg{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;z-index:3;opacity:0;transition:opacity .25s ease}
+  .poster .pimg.ld{opacity:1}
+  .poster .yr{position:relative;z-index:1;font-size:8px;opacity:.9;letter-spacing:.1em}
+  .p-sm{width:44px;height:62px}.p-sm .init{font-size:17px}
+  .p-md{width:58px;height:82px}.p-md .init{font-size:21px}
+  .p-lg{width:96px;height:136px;border-radius:14px}.p-lg .init{font-size:34px}.p-lg .yr{font-size:10px}
+
+  /* score badge */
+  .score{width:42px;height:42px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    font-family:var(--display);font-weight:700;font-size:14.5px;font-variant-numeric:tabular-nums;border:2px solid transparent}
+  .s-good{background:var(--good-soft);color:var(--good);border-color:var(--good)}
+  .s-mid{background:var(--mid-soft);color:var(--mid);border-color:var(--mid)}
+  .s-bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad)}
+
+  /* list rows */
+  .card{background:var(--surface);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+  .row{display:flex;align-items:center;gap:12px;padding:11px 14px;width:100%;text-align:left;border-bottom:1px solid var(--line)}
+  .row:last-child{border-bottom:none}
+  .row .meta{flex:1;min-width:0}
+  .row .t{font-weight:650;font-size:14.5px;line-height:1.25;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .row .d{color:var(--muted);font-size:12px;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .rankno{font-family:var(--display);font-weight:700;font-size:13px;color:var(--muted);width:26px;flex:none;text-align:center;font-variant-numeric:tabular-nums}
+
+  .pillbtn{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:600;flex:none}
+  .pillbtn.acc{background:var(--accent);border-color:var(--accent);color:var(--on-accent)}
+  .pillbtn.soft{background:var(--accent-soft);border-color:transparent;color:var(--accent)}
+  .iconbtn{width:34px;height:34px;border-radius:50%;border:1px solid var(--line);display:flex;align-items:center;justify-content:center;flex:none;color:var(--muted);background:var(--surface)}
+  .iconbtn.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+
+  /* segmented filter */
+  .segs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
+  .seg{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  .seg.cur{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+
+  /* search */
+  .searchbar{display:flex;align-items:center;gap:10px;background:var(--surface);border:1px solid var(--line);
+    border-radius:14px;padding:11px 14px;margin-bottom:14px}
+  .searchbar svg{color:var(--muted);flex:none}
+  .searchbar input{border:none;outline:none;background:transparent;color:var(--ink);font-size:15px;width:100%}
+  .searchbar input::placeholder{color:var(--muted)}
+
+  /* feed */
+  .fgrid{display:grid;grid-template-columns:1fr;gap:12px}
+  .fitem{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px}
+  .fhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+  .avatar{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
+    color:#fff;font-weight:700;font-size:13px;font-family:var(--display)}
+  .fwho{flex:1;min-width:0;font-size:13.5px;line-height:1.35}
+  .fwho b{font-weight:700}
+  .ftime{color:var(--muted);font-size:11.5px}
+  .fbody{display:flex;gap:12px;align-items:center;background:var(--surface2);border-radius:12px;padding:10px 12px}
+  .fbody .meta{flex:1;min-width:0}
+  .fnote{color:var(--muted);font-size:12.5px;font-style:italic;margin-top:6px;line-height:1.4}
+  .facts{display:flex;gap:14px;margin-top:10px}
+  .facts button{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;font-weight:600}
+  .facts button.liked{color:var(--bad)}
+
+  /* profile */
+  .phead{display:flex;align-items:center;gap:14px;margin-bottom:16px}
+  .phead .avatar{width:58px;height:58px;font-size:20px}
+  .pname{font-family:var(--display);font-weight:700;font-size:20px}
+  .phandle{color:var(--muted);font-size:13px}
+  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+  .stat{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 10px;text-align:center}
+  .stat .n{font-family:var(--display);font-weight:700;font-size:21px;font-variant-numeric:tabular-nums}
+  .stat .l{color:var(--muted);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;margin-top:3px}
+  .distrow{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12.5px}
+  .distrow .lbl{width:74px;color:var(--muted);font-weight:600;flex:none}
+  .distrow .bar{flex:1;height:10px;border-radius:6px;background:var(--surface2);overflow:hidden}
+  .distrow .fill{display:block;height:100%;border-radius:6px}
+  .distrow .cnt{width:22px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);flex:none}
+  .chips{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{background:var(--surface);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:600;color:var(--muted)}
+  .danger{color:var(--bad);font-weight:600;font-size:13px;margin-top:18px}
+
+  .empty{text-align:center;padding:44px 24px;color:var(--muted)}
+  .empty .big{font-size:34px;margin-bottom:10px}
+  .empty p{font-size:13.5px;line-height:1.5;margin:0 0 16px}
+  .sechead{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--muted);font-weight:700;margin:20px 2px 8px}
+
+  /* overlay / sheets */
+  .overlay{position:fixed;inset:0;z-index:50;background:rgba(10,16,14,.55);display:none;align-items:flex-end;justify-content:center}
+  .overlay.on{display:flex;animation:fade .15s ease}
+  .sheet{width:100%;max-width:432px;background:var(--bg);border-radius:22px 22px 0 0;padding:20px 20px calc(22px + env(safe-area-inset-bottom));
+    max-height:88dvh;overflow-y:auto;animation:up .22s ease}
+  @keyframes up{from{transform:translateY(28px);opacity:.6}to{transform:none;opacity:1}}
+  .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 16px}
+  .sheet .h1{font-size:20px}
+
+  /* rate flow */
+  .buckets{display:grid;gap:10px;margin-top:14px}
+  .bucket{display:flex;align-items:center;gap:12px;border-radius:14px;padding:14px;border:1px solid var(--line);background:var(--surface);text-align:left}
+  .bucket .dot{width:34px;height:34px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center}
+  .bucket b{font-size:15px;display:block}
+  .bucket span{color:var(--muted);font-size:12px}
+  .faceoff{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:8px;margin:18px 0 14px}
+  .contender{background:var(--surface);border:1px solid var(--line);border-radius:16px;padding:14px 10px;display:flex;flex-direction:column;align-items:center;gap:9px;text-align:center;transition:transform .1s ease}
+  .contender:active{transform:scale(.97)}
+  .contender .t{font-weight:650;font-size:13px;line-height:1.3}
+  .contender .d{color:var(--muted);font-size:11px}
+  .vs{font-family:var(--display);font-weight:700;color:var(--muted);font-size:13px}
+  .tiebtn{display:block;margin:0 auto;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+  .result{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:8px 0 4px}
+  .result .bigscore{width:84px;height:84px;font-size:28px}
+  .result h2{font-family:var(--display);font-size:22px;margin:0;text-wrap:balance}
+  .result p{color:var(--muted);font-size:13.5px;margin:0;line-height:1.5}
+  .step{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;text-align:center}
+
+  /* detail sheet */
+  .dhead{display:flex;gap:16px;align-items:flex-start;margin-bottom:16px}
+  .dhead .meta{flex:1;min-width:0;padding-top:6px}
+  .dhead h2{font-family:var(--display);font-size:21px;margin:0 0 4px;line-height:1.2;text-wrap:balance}
+  .dhead .d{color:var(--muted);font-size:13px;line-height:1.5}
+  .dactions{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px}
+
+  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:104px;z-index:60;background:var(--ink);color:var(--bg);
+    padding:10px 18px;border-radius:999px;font-size:13px;font-weight:600;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s ease}
+  .toast.on{opacity:1}
+
+  /* auth / onboarding */
+  .auth{position:absolute;inset:0;z-index:40;background:var(--bg);overflow-y:auto;display:none;padding:38px 26px 40px}
+  .auth.on{display:block;animation:fade .25s ease}
+  .auth .hero{display:flex;flex-direction:column;align-items:center;text-align:center;gap:10px;margin-bottom:26px}
+  .auth .hero .wordmark{font-size:34px}
+  .auth .tagline{font-size:15px;color:var(--muted);line-height:1.5;max-width:30ch;text-wrap:balance;margin:0}
+  .feat{display:flex;gap:10px;align-items:flex-start;font-size:13px;color:var(--muted);line-height:1.45}
+  .feat b{color:var(--ink)}
+  .feat .fdot{width:26px;height:26px;border-radius:8px;background:var(--accent-soft);color:var(--accent);
+    display:flex;align-items:center;justify-content:center;flex:none;font-size:13px}
+  .feats{display:grid;gap:12px;margin:0 auto 26px;max-width:320px}
+  .field{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px}
+  .authcard{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;display:grid;gap:10px;max-width:360px;margin:0 auto}
+  .socialbtn{display:flex;align-items:center;justify-content:center;gap:9px;border:1px solid var(--line);background:var(--surface2);
+    border-radius:12px;padding:11px;font-size:14px;font-weight:600}
+  .socialbtn .mark{font-family:var(--display);font-weight:700;width:20px;height:20px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;color:#fff}
+  .socialbtn.picked{border-color:var(--accent);background:var(--accent-soft)}
+  .ordiv{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:700}
+  .ordiv::before,.ordiv::after{content:"";flex:1;height:1px;background:var(--line)}
+  .swatches{display:flex;gap:9px;justify-content:center;padding:2px 0}
+  .swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent}
+  .swatch.cur{border-color:var(--ink)}
+  .authnote{text-align:center;color:var(--muted);font-size:11.5px;line-height:1.5;max-width:340px;margin:14px auto 0}
+  .ghostlink{display:block;margin:14px auto 0;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+
+  /* reelmates */
+  .match{font-family:var(--display);font-weight:700;font-size:13px;color:var(--accent);background:var(--accent-soft);
+    border-radius:999px;padding:5px 10px;flex:none;font-variant-numeric:tabular-nums}
+  .matchring{width:74px;height:74px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;
+    font-family:var(--display);font-weight:700;font-size:17px;color:var(--accent);
+    background:conic-gradient(var(--accent) calc(var(--pct)*1%), var(--line) 0);position:relative}
+  .matchring::before{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--surface)}
+  .matchring span{position:relative}
+  .bothrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+  .bothrow:last-child{border-bottom:none}
+  .bothrow .sc{width:34px;height:34px;font-size:12px}
+
+  /* hover affordances for mouse users */
+  @media (hover:hover){
+    .row:hover{background:var(--surface2)}
+    .fitem:hover,.bucket:hover{border-color:var(--accent)}
+    .contender:hover{border-color:var(--accent);transform:translateY(-2px)}
+    .pillbtn:hover{border-color:var(--accent)}
+    .pillbtn.acc:hover{filter:brightness(1.08)}
+    .iconbtn:hover{color:var(--accent);border-color:var(--accent)}
+    .seg:hover{border-color:var(--ink)}
+  }
+  .kbdhint{display:none;text-align:center;color:var(--muted);font-size:11.5px;margin-top:12px}
+  .kbdhint b{font-weight:700;border:1px solid var(--line);border-radius:5px;padding:1px 5px;background:var(--surface)}
+
+  /* ---------- desktop / landscape (PC & laptop): fill the browser ---------- */
+  @keyframes pop{from{transform:scale(.97);opacity:0}to{transform:none;opacity:1}}
+  @media (min-width: 900px){
+    .app{max-width:none;padding-left:240px;border-left:none;border-right:none}
+    /* bottom tab bar becomes a left sidebar */
+    .nav{left:0;transform:none;top:0;bottom:0;width:240px;max-width:none;
+      display:flex;flex-direction:column;align-items:stretch;justify-content:flex-start;gap:4px;
+      padding:22px 14px;border-top:none;border-right:1px solid var(--line)}
+    .nav::before{content:"Reeli";font-family:var(--display);font-weight:700;font-size:26px;letter-spacing:.5px;
+      color:var(--accent);padding:4px 12px 24px}
+    .nav button{flex-direction:row;justify-content:flex-start;gap:12px;padding:11px 12px;font-size:14px;border-radius:12px}
+    .nav button:hover{color:var(--ink);background:var(--surface2)}
+    .nav button.cur{background:var(--accent-soft);color:var(--accent)}
+    .nav .plus{margin:0;width:34px;height:34px;border-radius:10px;box-shadow:none;flex:none}
+    .nav .plus svg{width:20px;height:20px}
+    .nav button[data-nav="search"]::after{content:"Rank a movie";font-size:14px;font-weight:600;color:var(--accent)}
+    .nav button[data-nav="search"]{margin:8px 0}
+    .badge{top:50%;transform:translateY(-50%);left:auto;right:10px}
+    .top{padding:16px 36px 14px}
+    .top .logo{visibility:hidden} /* the sidebar carries the wordmark on desktop */
+    .screens{padding-bottom:56px}
+    .pad{max-width:1360px;margin:0 auto;padding:28px 36px}
+    #scr-profile .pad{max-width:940px}
+    .h1{font-size:30px}
+    .sub{font-size:14px;max-width:64ch}
+    /* feed becomes a card grid */
+    .fgrid{grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px;align-items:start}
+    /* list screens go multi-column: each row becomes its own card */
+    #scr-ranks .card,#scr-search .card,#scr-watch .card{background:transparent;border:none;border-radius:0;overflow:visible;
+      display:grid;grid-template-columns:repeat(auto-fill,minmax(420px,1fr));gap:10px}
+    #scr-ranks .card .row,#scr-search .card .row,#scr-watch .card .row{
+      background:var(--surface);border:1px solid var(--line);border-radius:14px}
+    #scr-ranks .card .empty,#scr-search .card .empty,#scr-watch .card .empty{grid-column:1/-1}
+    .kbdhint{display:block}
+    /* bottom sheets become centered dialogs */
+    .overlay{align-items:center;padding:28px}
+    .sheet{max-width:520px;border-radius:22px;animation:pop .18s ease;max-height:86dvh}
+    .grab{display:none}
+    .toast{bottom:44px}
+    /* onboarding goes two-column */
+    .auth{padding:48px 60px}
+    .auth.on{display:grid;grid-template-columns:minmax(0,560px) 420px;justify-content:center;
+      grid-template-areas:"hero card" "feats card" "feats ghost" ". note";
+      column-gap:64px;row-gap:10px;align-content:center}
+    .auth .hero{grid-area:hero;align-items:flex-start;text-align:left;margin-bottom:10px}
+    .auth .hero .wordmark{font-size:42px}
+    .auth .tagline{max-width:34ch;font-size:16.5px}
+    .feats{grid-area:feats;margin:0;max-width:380px}
+    .feat{font-size:13.5px}
+    .authcard{grid-area:card;align-self:center;width:100%;max-width:none}
+    .ghostlink{grid-area:ghost;margin:12px auto 0}
+    .authnote{grid-area:note;margin:0 auto}
+  }
+</style>
+
+<div class="app">
+  <header class="top">
+    <div class="logo">
+      <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="2.2"/>
+        <circle cx="12" cy="7.6" r="1.7" fill="var(--accent)"/><circle cx="12" cy="16.4" r="1.7" fill="var(--accent)"/>
+        <circle cx="7.6" cy="12" r="1.7" fill="var(--accent)"/><circle cx="16.4" cy="12" r="1.7" fill="var(--accent)"/>
+      </svg>
+      <span class="wordmark">Reeli</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <span class="screen-tag" id="screenTag">Feed</span>
+      <button class="iconbtn" id="themeBtn" title="Theme: auto" aria-label="Cycle color theme" style="font-size:15px">◐</button>
+    </div>
+  </header>
+
+  <main class="screens">
+    <section class="screen" id="scr-feed"><div class="pad" id="feedWrap"></div></section>
+    <section class="screen" id="scr-ranks"><div class="pad" id="ranksWrap"></div></section>
+    <section class="screen" id="scr-search"><div class="pad" id="searchWrap"></div></section>
+    <section class="screen" id="scr-watch"><div class="pad" id="watchWrap"></div></section>
+    <section class="screen" id="scr-profile"><div class="pad" id="profileWrap"></div></section>
+  </main>
+
+  <nav class="nav" aria-label="Main">
+    <button data-nav="feed" class="cur"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Feed</button>
+    <button data-nav="ranks"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M8 6h13M8 12h13M8 18h13"/><path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01" stroke-width="2.6"/></svg>Ranks</button>
+    <button data-nav="search" aria-label="Rank a movie"><span class="plus"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span></button>
+    <button data-nav="watch"><span class="badge" id="watchBadge"></span><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg>Watchlist</button>
+    <button data-nav="profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-3.6 4.4-5.5 8-5.5s6.5 1.9 8 5.5"/></svg>Profile</button>
+  </nav>
+
+  <div class="auth" id="auth"></div>
+  <div class="overlay" id="overlay" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
+  <div class="toast" id="toast" role="status"></div>
+</div>
+
+<script>
+'use strict';
+/* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
+const DB = [
+  ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
+  ["shawshank","The Shawshank Redemption",1994,"Drama","Frank Darabont",210],
+  ["darkknight","The Dark Knight",2008,"Action","Christopher Nolan",230],
+  ["pulpfiction","Pulp Fiction",1994,"Crime","Quentin Tarantino",45],
+  ["parasite","Parasite",2019,"Thriller","Bong Joon-ho",150],
+  ["spiritedaway","Spirited Away",2001,"Animation","Hayao Miyazaki",0],
+  ["interstellar","Interstellar",2014,"Sci-Fi","Christopher Nolan",255],
+  ["inception","Inception",2010,"Sci-Fi","Christopher Nolan",215],
+  ["goodfellas","Goodfellas",1990,"Crime","Martin Scorsese",350],
+  ["fightclub","Fight Club",1999,"Drama","David Fincher",330],
+  ["matrix","The Matrix",1999,"Sci-Fi","The Wachowskis",130],
+  ["forrestgump","Forrest Gump",1994,"Drama","Robert Zemeckis",95],
+  ["seven","Se7en",1995,"Thriller","David Fincher",25],
+  ["silence","The Silence of the Lambs",1991,"Thriller","Jonathan Demme",10],
+  ["gladiator","Gladiator",2000,"Action","Ridley Scott",35],
+  ["departed","The Departed",2006,"Crime","Martin Scorsese",200],
+  ["whiplash","Whiplash",2014,"Drama","Damien Chazelle",40],
+  ["prestige","The Prestige",2006,"Mystery","Christopher Nolan",260],
+  ["lionking","The Lion King",1994,"Animation","Rob Minkoff",30],
+  ["backfuture","Back to the Future",1985,"Sci-Fi","Robert Zemeckis",190],
+  ["lotr1","The Fellowship of the Ring",2001,"Fantasy","Peter Jackson",110],
+  ["lotr3","The Return of the King",2003,"Fantasy","Peter Jackson",50],
+  ["starwars4","Star Wars: A New Hope",1977,"Sci-Fi","George Lucas",48],
+  ["empire","The Empire Strikes Back",1980,"Sci-Fi","Irvin Kershner",220],
+  ["jurassic","Jurassic Park",1993,"Adventure","Steven Spielberg",120],
+  ["titanic","Titanic",1997,"Romance","James Cameron",205],
+  ["avatar","Avatar",2009,"Sci-Fi","James Cameron",175],
+  ["casablanca","Casablanca",1942,"Romance","Michael Curtiz",42],
+  ["psycho","Psycho",1960,"Horror","Alfred Hitchcock",0],
+  ["rearwindow","Rear Window",1954,"Mystery","Alfred Hitchcock",160],
+  ["citizenkane","Citizen Kane",1941,"Drama","Orson Welles",38],
+  ["taxidriver","Taxi Driver",1976,"Drama","Martin Scorsese",52],
+  ["apocalypse","Apocalypse Now",1979,"War","Francis Ford Coppola",18],
+  ["alien","Alien",1979,"Horror","Ridley Scott",140],
+  ["blade","Blade Runner",1982,"Sci-Fi","Ridley Scott",280],
+  ["blade2049","Blade Runner 2049",2017,"Sci-Fi","Denis Villeneuve",22],
+  ["dune","Dune: Part One",2021,"Sci-Fi","Denis Villeneuve",33],
+  ["dune2","Dune: Part Two",2024,"Sci-Fi","Denis Villeneuve",20],
+  ["oppenheimer","Oppenheimer",2023,"Drama","Christopher Nolan",15],
+  ["barbie","Barbie",2023,"Comedy","Greta Gerwig",320],
+  ["eeaao","Everything Everywhere All at Once",2022,"Sci-Fi","Daniels",300],
+  ["nocountry","No Country for Old Men",2007,"Thriller","Coen Brothers",36],
+  ["fargo","Fargo",1996,"Crime","Coen Brothers",195],
+  ["lebowski","The Big Lebowski",1998,"Comedy","Coen Brothers",85],
+  ["grandbudapest","The Grand Budapest Hotel",2014,"Comedy","Wes Anderson",340],
+  ["moonrise","Moonrise Kingdom",2012,"Comedy","Wes Anderson",55],
+  ["amelie","Amélie",2001,"Romance","Jean-Pierre Jeunet",100],
+  ["oldboy","Oldboy",2003,"Thriller","Park Chan-wook",15],
+  ["cityofgod","City of God",2002,"Crime","Fernando Meirelles",43],
+  ["panslabyrinth","Pan's Labyrinth",2006,"Fantasy","Guillermo del Toro",115],
+  ["princessmono","Princess Mononoke",1997,"Animation","Hayao Miyazaki",145],
+  ["totoro","My Neighbor Totoro",1988,"Animation","Hayao Miyazaki",125],
+  ["wall-e","WALL·E",2008,"Animation","Andrew Stanton",185],
+  ["up","Up",2009,"Animation","Pete Docter",290],
+  ["insideout","Inside Out",2015,"Animation","Pete Docter",58],
+  ["cocomovie","Coco",2017,"Animation","Lee Unkrich",25],
+  ["spiderverse","Into the Spider-Verse",2018,"Animation","Persichetti / Ramsey / Rothman",335],
+  ["getout","Get Out",2017,"Horror","Jordan Peele",165],
+  ["hereditary","Hereditary",2018,"Horror","Ari Aster",8],
+  ["shining","The Shining",1980,"Horror","Stanley Kubrick",355],
+  ["2001space","2001: A Space Odyssey",1968,"Sci-Fi","Stanley Kubrick",235],
+  ["clockwork","A Clockwork Orange",1971,"Drama","Stanley Kubrick",30],
+  ["madmax","Mad Max: Fury Road",2015,"Action","George Miller",24],
+  ["johnwick","John Wick",2014,"Action","Chad Stahelski",250],
+  ["heat","Heat",1995,"Crime","Michael Mann",212],
+  ["drive","Drive",2011,"Thriller","Nicolas Winding Refn",315],
+  ["lalaland","La La Land",2016,"Romance","Damien Chazelle",265],
+  ["her","Her",2013,"Romance","Spike Jonze",5],
+  ["socialnetwork","The Social Network",2010,"Drama","David Fincher",208],
+  ["truman","The Truman Show",1998,"Drama","Peter Weir",188],
+  ["etern","Eternal Sunshine of the Spotless Mind",2004,"Romance","Michel Gondry",170],
+  ["killbill","Kill Bill: Vol. 1",2003,"Action","Quentin Tarantino",50],
+  ["django","Django Unchained",2012,"Western","Quentin Tarantino",32],
+  ["inglourious","Inglourious Basterds",2009,"War","Quentin Tarantino",12],
+  ["saving","Saving Private Ryan",1998,"War","Steven Spielberg",78],
+  ["schindler","Schindler's List",1993,"Drama","Steven Spielberg",0],
+  ["memento","Memento",2000,"Mystery","Christopher Nolan",192],
+  ["arrival","Arrival",2016,"Sci-Fi","Denis Villeneuve",198],
+  ["knivesout","Knives Out",2019,"Mystery","Rian Johnson",352],
+  ["challengers","Challengers",2024,"Drama","Luca Guadagnino",88],
+];
+const MOVIES = {};
+DB.forEach(a => MOVIES[a[0]] = {id:a[0], title:a[1], year:a[2], genre:a[3], dir:a[4], hue:a[5]});
+
+/* ---------- state ---------- */
+const KEY = "reeli-v1";
+const BUCKETS = { loved:{hi:10, lo:6.7}, fine:{hi:6.6, lo:3.4}, disliked:{hi:3.3, lo:0.5} };
+let S = load();
+
+function seed(){
+  return {
+    profile:null,
+    mates:[0,1,3,4],
+    loved:["parasite","whiplash","spiderverse","madmax"],
+    fine:["avatar","johnwick"],
+    disliked:["barbie"],
+    watch:["dune2","oppenheimer","eeaao","blade2049"],
+    custom:[],
+    likes:{},
+    myFeed:[],
+  };
+}
+function load(){
+  try{
+    const raw = localStorage.getItem(KEY);
+    if(raw){
+      const s = JSON.parse(raw);
+      if(s && s.loved){
+        if(!("profile" in s)) s.profile = null;
+        if(!Array.isArray(s.mates)) s.mates = [0,1,3,4];
+        return s;
+      }
+    }
+  }catch(e){}
+  return seed();
+}
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} updateBadge(); }
+function updateBadge(){
+  const b = document.getElementById("watchBadge");
+  if(b) b.textContent = S.watch.length ? String(S.watch.length) : "";
+}
+
+function getMovie(id){
+  if(MOVIES[id]) return MOVIES[id];
+  if(LIVE[id]) return LIVE[id];
+  return S.custom.find(m => m.id === id) || null;
+}
+/* persist a live-search movie into the user's personal DB so it survives reloads */
+function ensureSaved(id){
+  if(MOVIES[id]) return;
+  if(S.custom.some(m => m.id === id)) return;
+  if(LIVE[id]) S.custom.push(LIVE[id]);
+}
+function allRanked(){ return [...S.loved, ...S.fine, ...S.disliked]; }
+function isRanked(id){ return allRanked().includes(id); }
+function bucketOf(id){ for(const b of ["loved","fine","disliked"]) if(S[b].includes(id)) return b; return null; }
+function scoreOf(id){
+  const b = bucketOf(id); if(!b) return null;
+  const arr = S[b], i = arr.indexOf(id), {hi,lo} = BUCKETS[b];
+  return Math.round((hi - (hi-lo)*(i+1)/(arr.length+1))*10)/10;
+}
+function rankOf(id){ return allRanked().indexOf(id)+1; }
+function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
+function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
+
+/* ---------- helpers ---------- */
+const $ = sel => document.querySelector(sel);
+function esc(s){ return String(s).replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+function initials(t){
+  const skip = new Set(["the","a","an","of","to","in","la","le"]);
+  const w = t.split(/[\s:·-]+/).filter(x => x && !skip.has(x.toLowerCase()));
+  return ((w[0]||t)[0] + (w[1]?w[1][0]:"")).toUpperCase();
+}
+function metahubPoster(tt){ return "https://images.metahub.space/poster/medium/" + tt + "/img"; }
+/* poster <img> onerror: swap to the metahub CDN once (keyed by IMDb id), then give up to the gradient card */
+window.__pfail = function(img, tt){
+  if(tt && !img.dataset.f){ img.dataset.f = "1"; img.src = metahubPoster(tt); }
+  else img.remove();
+};
+function cacheEntry(id){
+  const c = POSTERS.cache[id];
+  if(!c || c === "x") return null;
+  return typeof c === "string" ? {u:c, tt:null} : c;
+}
+function posterHTML(m, size){
+  const h = m.hue;
+  const tt = /^tt\d+$/.test(m.id) ? m.id : "";
+  const cached = m.poster ? {u:m.poster, tt} : cacheEntry(m.id);
+  const img = cached
+    ? `<img class="pimg" src="${esc(cached.u)}" alt="" onload="this.classList.add('ld')" onerror="__pfail(this,'${esc(cached.tt||tt)}')">`
+    : `<img class="pimg" data-pid="${esc(m.id)}" alt="">`;
+  return `<div class="poster ${size}" style="background:linear-gradient(150deg,hsl(${h} 42% 46%),hsl(${(h+40)%360} 48% 30%))" aria-hidden="true">
+    <span class="init">${esc(initials(m.title))}</span><span class="yr">${m.year}</span>${img}</div>`;
+}
+
+/* ---------- Cinemeta (free, keyless, worldwide IMDb-backed catalog) ----------
+   Stremio's public metadata API: live catalog search, real posters, and a
+   per-title meta endpoint (genres, director, description, IMDb rating).
+   Where outbound requests are blocked (e.g. sandboxed hosting), everything
+   degrades gracefully to the built-in library and gradient poster cards. */
+const CINE = "https://v3-cinemeta.strem.io";
+const LIVE = {}; // id -> movie object from live search, this session
+function getJSON(url, cb, timeoutMs){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs || 8000);
+  fetch(url, {signal: ctl.signal})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { clearTimeout(t); cb(d); })
+    .catch(() => { clearTimeout(t); cb(null); });
+}
+function cineSearch(term, cb){
+  getJSON(CINE + "/catalog/movie/top/search=" + encodeURIComponent(term) + ".json",
+    d => cb(d && Array.isArray(d.metas) ? d.metas : null));
+}
+function cineMeta(id, cb){
+  getJSON(CINE + "/meta/movie/" + encodeURIComponent(id) + ".json",
+    d => cb(d && d.meta ? d.meta : null));
+}
+function normT(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
+function cineToMovie(r){
+  let hash = 0; for(const ch of r.name) hash = (hash*31 + ch.charCodeAt(0)) % 360;
+  return { id: r.imdb_id || r.id, title: r.name,
+    year: r.releaseInfo ? parseInt(String(r.releaseInfo).slice(0,4),10) || "—" : "—",
+    genre: "", dir: "", hue: hash, poster: r.poster || null };
+}
+/* one-line meta under a title: skip blanks */
+function mline(m){ return [m.year, m.genre, m.dir].filter(x => x && x !== "—").join(" · "); }
+/* fill in genre/director/description for a catalog movie, then re-render */
+function enrich(id, after){
+  const m = getMovie(id);
+  if(!m || m.enriched || !/^tt\d+$/.test(id)){ if(after) after(false); return; }
+  cineMeta(id, meta => {
+    if(meta){
+      m.genre = (meta.genres && meta.genres[0]) || m.genre;
+      m.dir = (meta.director && meta.director[0]) || m.dir;
+      m.desc = meta.description || null;
+      m.imdb = meta.imdbRating || null;
+      m.runtime = meta.runtime || null;
+      m.enriched = true;
+      if(S.custom.some(x => x.id === id)) save();
+    }
+    if(after) after(!!meta);
+  });
+}
+
+/* poster lookups for built-in movies, queued politely + cached */
+const POSTERS = (() => {
+  let cache = {};
+  try{ cache = JSON.parse(localStorage.getItem("reeli-posters")||"{}"); }catch(e){}
+  // "no match" verdicts don't persist across sessions — only real poster URLs do
+  for(const k of Object.keys(cache)) if(cache[k] === "x") delete cache[k];
+  return { cache, failed:new Set(), q:[], queued:new Set(), busy:false };
+})();
+function savePosters(){ try{ localStorage.setItem("reeli-posters", JSON.stringify(POSTERS.cache)); }catch(e){} }
+function hydratePosters(root){
+  root.querySelectorAll("img.pimg[data-pid]").forEach(img => {
+    const id = img.dataset.pid;
+    const c = cacheEntry(id);
+    if(c){ setPoster(img, c); }
+    else if(POSTERS.cache[id] !== "x" && !POSTERS.failed.has(id) && !POSTERS.queued.has(id)){
+      POSTERS.queued.add(id); POSTERS.q.push(id); pumpPosters();
+    }
+  });
+}
+function setPoster(img, entry){
+  if(img.src) return;
+  img.addEventListener("load", () => img.classList.add("ld"));
+  img.addEventListener("error", () => window.__pfail(img, entry.tt || ""));
+  img.src = entry.u;
+}
+/* bounded edit distance for stylized titles ("Se7en" vs "Seven") */
+function lev(a, b, cap){
+  if(Math.abs(a.length - b.length) > cap) return cap + 1;
+  let prev = Array.from({length: b.length + 1}, (_, i) => i);
+  for(let i = 1; i <= a.length; i++){
+    const curr = [i];
+    for(let j = 1; j <= b.length; j++)
+      curr[j] = Math.min(prev[j] + 1, curr[j-1] + 1, prev[j-1] + (a[i-1] === b[j-1] ? 0 : 1));
+    prev = curr;
+  }
+  return prev[b.length];
+}
+/* score every candidate instead of taking the first loose match —
+   handles retitles ("Star Wars: Episode IV - A New Hope") and
+   stylizations ("Se7en" is catalogued as "Seven") */
+function pickMeta(metas, title, year){
+  const want = normT(title), wtok = want.split(" ");
+  let best = null, bestScore = 0;
+  for(const r of metas){
+    if(!r.poster && !(r.imdb_id || r.id)) continue;
+    const got = normT(r.name || "");
+    const yr = parseInt(String(r.releaseInfo || "").slice(0,4),10) || 0;
+    let s = 0;
+    const fuzzCap = Math.max(1, Math.floor(want.length / 8));
+    if(got === want) s += 100;
+    else if(lev(got, want, fuzzCap) <= fuzzCap) s += 90;
+    else if(got.includes(want) || want.includes(got)){
+      // containment scaled by length ratio, so "Kaori's SM Se7en" can't ride on containing "Se7en"
+      const ratio = Math.min(got.length, want.length) / Math.max(got.length, want.length);
+      s += Math.round(65 * Math.max(0.35, ratio));
+    } else {
+      const gtok = got.split(" ");
+      const hits = wtok.filter(t => gtok.some(g => g === t || (t.length >= 4 && lev(g, t, 1) <= 1))).length;
+      s += hits === wtok.length ? 55 : hits >= wtok.length * 0.6 ? 25 : -100;
+    }
+    if(year && yr){
+      const d = Math.abs(yr - year);
+      s += d === 0 ? 30 : d <= 1 ? 20 : d <= 2 ? 0 : -60;
+    }
+    if(r.poster) s += 5;
+    if(s > bestScore){ bestScore = s; best = r; }
+  }
+  return bestScore >= 60 ? best : null;
+}
+function pumpPosters(){
+  if(POSTERS.busy || !POSTERS.q.length) return;
+  POSTERS.busy = true;
+  const id = POSTERS.q.shift();
+  const m = getMovie(id);
+  if(!m){ POSTERS.busy = false; POSTERS.queued.delete(id); pumpPosters(); return; }
+  cineSearch(m.title, metas => {
+    if(metas === null){ POSTERS.failed.add(id); }
+    else {
+      const hit = pickMeta(metas, m.title, m.year);
+      const tt = hit ? (hit.imdb_id || (/^tt\d+$/.test(hit.id||"") ? hit.id : null)) : null;
+      POSTERS.cache[id] = hit ? {u: hit.poster || metahubPoster(tt), tt} : "x";
+      savePosters();
+      if(hit) document.querySelectorAll(`img.pimg[data-pid="${CSS.escape(id)}"]`).forEach(img => setPoster(img, cacheEntry(id)));
+    }
+    POSTERS.queued.delete(id);
+    setTimeout(() => { POSTERS.busy = false; pumpPosters(); }, 250);
+  });
+}
+function scoreHTML(sc, extra){ return `<div class="score ${scoreClass(sc)} ${extra||""}">${sc.toFixed(1)}</div>`; }
+let toastT;
+function toast(msg){
+  const t = $("#toast"); t.textContent = msg; t.classList.add("on");
+  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove("on"), 1900);
+}
+
+/* ---------- navigation ---------- */
+const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank a movie", watch:"Watchlist", profile:"Profile"};
+let cur = "feed";
+function nav(to){
+  cur = to;
+  document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+  $("#scr-"+to).classList.add("on");
+  document.querySelectorAll(".nav [data-nav]").forEach(b => b.classList.toggle("cur", b.dataset.nav === to));
+  $("#screenTag").textContent = TAGS[to];
+  render(to);
+  window.scrollTo({top:0});
+}
+document.querySelectorAll(".nav [data-nav]").forEach(b => b.addEventListener("click", () => nav(b.dataset.nav)));
+
+function render(which){
+  ({feed:renderFeed, ranks:renderRanks, search:renderSearch, watch:renderWatch, profile:renderProfile})[which]();
+  hydratePosters($("#scr-"+which));
+}
+
+/* ---------- feed + reelmates ---------- */
+const FRIENDS = [
+  {name:"Priya", handle:"@priyacut", hue:262, bio:"IMAX loyalist. Villeneuve completionist."},
+  {name:"Dex", handle:"@dexframes", hue:22, bio:"Crime sagas and one-take chases."},
+  {name:"Sofia", handle:"@sofiascenes", hue:335, bio:"Hot takes, cold brew, A24 forever."},
+  {name:"Marcus", handle:"@marcusreels", hue:205, bio:"Horror after midnight only."},
+  {name:"Yuki", handle:"@yukiwatches", hue:150, bio:"Ghibli is a personality trait."},
+];
+function mateMatch(i){
+  const theirs = FEED_SEED.filter(f => f.who === i && isRanked(f.movie));
+  if(theirs.length){
+    const d = theirs.reduce((a,f) => a + Math.abs(f.score - scoreOf(f.movie)), 0) / theirs.length;
+    return Math.min(99, Math.max(35, Math.round(97 - d*9)));
+  }
+  return 52 + (FRIENDS[i].hue % 43);
+}
+const FEED_SEED = [
+  {who:0, movie:"dune2", score:9.3, time:"2h", note:"IMAX or it doesn't count. Sandworm scene had me holding my breath.", likes:12},
+  {who:1, movie:"heat", score:8.1, time:"4h", note:"The diner scene alone earns the score.", likes:7},
+  {who:2, movie:"challengers", score:7.4, time:"yesterday", note:"", likes:9},
+  {who:3, movie:"hereditary", score:4.2, time:"yesterday", note:"Objectively well made. Subjectively I will never sleep again.", likes:15},
+  {who:4, movie:"totoro", score:9.6, time:"2d", note:"Comfort cinema, perfected.", likes:21},
+  {who:1, movie:"blade2049", score:8.8, time:"3d", note:"", likes:5},
+  {who:2, movie:"lalaland", score:6.1, time:"3d", note:"Fight me.", likes:31},
+  {who:0, movie:"arrival", score:9.0, time:"4d", note:"Rewatch. Hits different the second time — that's the point.", likes:11},
+];
+function feedItemHTML(f, idx, mine){
+  const m = getMovie(f.movie); if(!m) return "";
+  const who = mine ? {name:"You", hue:(S.profile ? S.profile.hue : 172)} : FRIENDS[f.who];
+  const likeKey = mine ? "me"+idx : "fr"+idx;
+  const liked = !!S.likes[likeKey];
+  const likeN = (f.likes||0) + (liked?1:0);
+  return `<article class="fitem">
+    <div class="fhead">
+      <div class="avatar" style="background:hsl(${who.hue} 45% 45%)">${esc(who.name[0])}</div>
+      <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${esc(f.time)} · #${f.rank ? f.rank : "—"} on their list</span></div>
+      ${scoreHTML(f.score)}
+    </div>
+    <button class="fbody" data-open="${m.id}" style="width:100%;text-align:left;border:none">
+      ${posterHTML(m,"p-sm")}
+      <div class="meta"><span class="t" style="font-weight:650;font-size:13.5px;display:block">${esc(m.title)}</span>
+      <span class="d" style="color:var(--muted);font-size:12px">${esc(mline(m))}</span></div>
+    </button>
+    ${f.note ? `<p class="fnote">“${esc(f.note)}”</p>` : ""}
+    <div class="facts">
+      <button data-like="${likeKey}" class="${liked?"liked":""}" aria-pressed="${liked}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
+        ${likeN}</button>
+      <button data-open="${m.id}">${isRanked(m.id) ? "Ranked ✓" : "Rank it too"}</button>
+    </div>
+  </article>`;
+}
+let feedTab = "activity";
+function renderFeed(){
+  const segs = `<div class="segs">
+    <button class="seg ${feedTab==="activity"?"cur":""}" data-ftab="activity">Activity</button>
+    <button class="seg ${feedTab==="mates"?"cur":""}" data-ftab="mates">Reelmates (${S.mates.length})</button>
+  </div>`;
+  let body;
+  if(feedTab === "activity"){
+    const mine = S.myFeed.map((f,i) => feedItemHTML(f, i, true)).join("");
+    const seedHTML = FEED_SEED
+      .map((f,i) => ({f,i}))
+      .filter(x => S.mates.includes(x.f.who))
+      .map(x => feedItemHTML({...x.f, rank:x.f.rank || (x.i%7)+2}, x.i, false)).join("");
+    body = (mine + seedHTML) ? `<div class="fgrid">${mine + seedHTML}</div>` :
+      `<div class="empty"><div class="big" aria-hidden="true">🎞️</div>
+        <p>Your feed is quiet. Add some Reelmates — your people in the audience — and their rankings show up here.</p>
+        <button class="pillbtn acc" data-ftabgo="mates">Find Reelmates</button></div>`;
+    body = `<h1 class="h1">Fresh takes</h1>
+      <p class="sub">What your Reelmates have been watching — and where it landed on their lists.</p>${segs}${body}`;
+  } else {
+    const row = (i) => {
+      const fr = FRIENDS[i], on = S.mates.includes(i);
+      return `<div class="row">
+        <div class="avatar" style="background:hsl(${fr.hue} 45% 45%)">${esc(fr.name[0])}</div>
+        <button class="meta" data-mate="${i}" style="text-align:left;min-width:0">
+          <span class="t">${esc(fr.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">${esc(fr.handle)}</span></span>
+          <span class="d">${esc(fr.bio)}</span>
+        </button>
+        <span class="match">${mateMatch(i)}%</span>
+        <button class="pillbtn ${on?"soft":"acc"}" data-follow="${i}">${on?"✓":"Add"}</button>
+      </div>`;
+    };
+    const mine = FRIENDS.map((_,i)=>i).filter(i => S.mates.includes(i));
+    const sugg = FRIENDS.map((_,i)=>i).filter(i => !S.mates.includes(i));
+    body = `<h1 class="h1">Reelmates</h1>
+      <p class="sub">Your people in the audience. The % is your taste match — how closely your scores agree on movies you've both ranked.</p>
+      ${segs}
+      ${mine.length ? `<div class="sechead">Your reelmates</div><div class="card">${mine.map(row).join("")}</div>` : ""}
+      ${sugg.length ? `<div class="sechead">Suggested</div><div class="card">${sugg.map(row).join("")}</div>` : ""}`;
+  }
+  $("#feedWrap").innerHTML = body;
+  $("#feedWrap").querySelectorAll("[data-ftab]").forEach(b => b.addEventListener("click", () => { feedTab = b.dataset.ftab; renderFeed(); }));
+  $("#feedWrap").querySelectorAll("[data-ftabgo]").forEach(b => b.addEventListener("click", () => { feedTab = b.dataset.ftabgo; renderFeed(); }));
+  $("#feedWrap").querySelectorAll("[data-follow]").forEach(b => b.addEventListener("click", () => {
+    const i = +b.dataset.follow;
+    if(S.mates.includes(i)){ S.mates = S.mates.filter(x => x !== i); toast(`Removed ${FRIENDS[i].name}`); }
+    else { S.mates.push(i); toast(`${FRIENDS[i].name} is now a Reelmate 🎟️`); }
+    save(); renderFeed();
+  }));
+  $("#feedWrap").querySelectorAll("[data-mate]").forEach(b => b.addEventListener("click", () => openMate(+b.dataset.mate)));
+  wireCommon($("#feedWrap"));
+}
+function openMate(i){
+  const fr = FRIENDS[i], on = S.mates.includes(i), match = mateMatch(i);
+  const theirs = FEED_SEED.filter(f => f.who === i);
+  const both = theirs.filter(f => isRanked(f.movie));
+  openSheet(`
+    <div class="dhead">
+      <div class="avatar" style="background:hsl(${fr.hue} 45% 45%);width:74px;height:74px;font-size:26px">${esc(fr.name[0])}</div>
+      <div class="meta">
+        <h2>${esc(fr.name)}</h2>
+        <div class="d">${esc(fr.handle)} · ${esc(fr.bio)}</div>
+        <div class="dactions">
+          <button class="pillbtn ${on?"soft":"acc"}" data-mfollow="${i}">${on ? "Reelmates ✓" : "Add Reelmate"}</button>
+        </div>
+      </div>
+      <div class="matchring" style="--pct:${match}"><span>${match}%</span></div>
+    </div>
+    ${both.length ? `<div class="sechead">You both ranked</div><div class="card" style="padding:6px 14px">
+      ${both.map(f => { const m = getMovie(f.movie); return `<div class="bothrow">
+        <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(m.title)}</span>
+        <span class="score sc ${scoreClass(scoreOf(f.movie))}" title="Your score">${scoreOf(f.movie).toFixed(1)}</span>
+        <span class="score sc ${scoreClass(f.score)}" title="${esc(fr.name)}'s score">${f.score.toFixed(1)}</span>
+      </div>`; }).join("")}
+      <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>${esc(fr.name.toLowerCase())}</span></div>
+    </div>` : ""}
+    <div class="sechead">Recent rankings</div>
+    <div class="card">${theirs.map(f => { const m = getMovie(f.movie); return `<button class="row" data-open="${m.id}">
+      ${posterHTML(m,"p-sm")}
+      <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${m.year} · ${esc(m.genre)}</span></span>
+      ${scoreHTML(f.score)}</button>`; }).join("")}</div>`);
+  sheet.querySelectorAll("[data-mfollow]").forEach(b => b.addEventListener("click", () => {
+    if(S.mates.includes(i)) S.mates = S.mates.filter(x => x !== i);
+    else { S.mates.push(i); toast(`${fr.name} is now a Reelmate 🎟️`); }
+    save(); openMate(i); if(cur === "feed") renderFeed();
+  }));
+  sheet.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.open)));
+  hydratePosters(sheet);
+}
+
+/* ---------- rankings ---------- */
+let rankFilter = "all";
+function renderRanks(){
+  const ids = allRanked();
+  let body;
+  if(!ids.length){
+    body = `<div class="empty"><div class="big" aria-hidden="true">🎬</div>
+      <p>Nothing ranked yet. Add your first movie and Reeli will build your list one head-to-head at a time.</p>
+      <button class="pillbtn acc" data-gosearch>Rank your first movie</button></div>`;
+  } else {
+    const shown = ids.filter(id => {
+      if(rankFilter === "all") return true;
+      return bucketOf(id) === rankFilter;
+    });
+    const rows = shown.map(id => {
+      const m = getMovie(id); if(!m) return "";
+      return `<button class="row" data-open="${id}">
+        <span class="rankno">${rankOf(id)}</span>
+        ${posterHTML(m,"p-sm")}
+        <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${m.year} · ${esc(m.genre)}</span></span>
+        ${scoreHTML(scoreOf(id))}
+      </button>`;
+    }).join("");
+    body = `
+      <div class="segs" role="tablist">
+        ${[["all","All ("+ids.length+")"],["loved","Loved"],["fine","Fine"],["disliked","Not for me"]].map(([k,l]) =>
+          `<button class="seg ${rankFilter===k?"cur":""}" data-filter="${k}">${l}</button>`).join("")}
+      </div>
+      <div class="card">${rows || `<div class="empty"><p>Nothing in this bucket yet.</p></div>`}</div>`;
+  }
+  $("#ranksWrap").innerHTML = `
+    <h1 class="h1">Your ranking</h1>
+    <p class="sub">Every score is earned by head-to-head matchups — no gut-feel star ratings here.</p>
+    ${body}`;
+  $("#ranksWrap").querySelectorAll("[data-filter]").forEach(b =>
+    b.addEventListener("click", () => { rankFilter = b.dataset.filter; renderRanks(); }));
+  wireCommon($("#ranksWrap"));
+}
+
+/* ---------- search (built-in library + live worldwide catalog) ---------- */
+let query = "", liveResults = [], liveState = "idle", liveT = null, liveSeq = 0;
+function movieRowHTML(m){
+  const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
+  return `<div class="row">
+    ${posterHTML(m,"p-sm")}
+    <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
+      <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
+    </button>
+    ${ranked ? scoreHTML(scoreOf(m.id))
+      : `<button class="iconbtn ${inWatch?"on":""}" data-watch="${m.id}" aria-label="${inWatch?"Remove from":"Add to"} watchlist" title="Watchlist">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="${inWatch?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg></button>
+        <button class="pillbtn acc" data-rate="${m.id}">Rank</button>`}
+  </div>`;
+}
+function runLiveSearch(q){
+  const seq = ++liveSeq;
+  liveState = "loading";
+  cineSearch(q, metas => {
+    if(seq !== liveSeq) return; // a newer query superseded this one
+    if(metas === null){ liveState = "err"; liveResults = []; }
+    else {
+      liveState = "done";
+      const locals = new Set([...DB.map(a => normT(a[1])+"|"+a[2]), ...S.custom.map(m => normT(m.title)+"|"+m.year)]);
+      liveResults = metas.slice(0, 20).map(cineToMovie)
+        .filter(m => !locals.has(normT(m.title)+"|"+m.year));
+      liveResults.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
+    }
+    if(cur === "search") renderSearch();
+  });
+}
+let TREND = null; // null = not fetched, "loading"/"err", or array of movies
+function loadTrending(){
+  TREND = "loading";
+  getJSON(CINE + "/catalog/movie/top.json", d => {
+    if(!d || !Array.isArray(d.metas)){ TREND = "err"; return; }
+    const locals = new Set(DB.map(a => normT(a[1])+"|"+a[2]));
+    TREND = d.metas.slice(0, 14).map(cineToMovie).filter(m => !locals.has(normT(m.title)+"|"+m.year));
+    TREND.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
+    if(cur === "search" && !query.trim()) renderSearch();
+  });
+}
+function renderSearch(){
+  const q = query.trim().toLowerCase();
+  if(!q && TREND === null) loadTrending();
+  const pool = [...DB.map(a => MOVIES[a[0]]), ...S.custom];
+  const list = q
+    ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
+    : pool.filter(m => !isRanked(m.id)).slice(0, 12);
+  const rows = list.map(movieRowHTML).join("");
+  const trendRows = (!q && Array.isArray(TREND))
+    ? TREND.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+  let liveHTML = "";
+  if(q){
+    const liveRows = liveResults.map(movieRowHTML).join("");
+    liveHTML = `<div class="sechead">Worldwide catalog</div><div class="card">${
+      liveState === "loading" ? `<div class="empty" style="padding:22px"><p>Searching the worldwide catalog…</p></div>`
+      : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now — showing the built-in library only.</p></div>`
+      : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
+  }
+  $("#searchWrap").innerHTML = `
+    <h1 class="h1">Rank a movie</h1>
+    <p class="sub">Search any movie ever released — live from the worldwide catalog.</p>
+    <div class="searchbar">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
+      <input id="q" type="search" placeholder="Search any movie, director, genre…" value="${esc(query)}" autocomplete="off">
+    </div>
+    ${trendRows ? `<div class="sechead">Popular right now</div><div class="card">${trendRows}</div>` : ""}
+    ${!q ? `<div class="sechead">Suggestions for you</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
+    ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}
+    ${liveHTML}
+    <div class="sechead">Missing something?</div>
+    <div class="card"><div class="row">
+      <span class="meta"><span class="t">Add a movie manually</span><span class="d">Home movies? Festival one-offs? Put them on the board.</span></span>
+      <button class="pillbtn soft" data-addcustom>Add</button>
+    </div></div>`;
+  const inp = $("#q");
+  inp.addEventListener("input", () => {
+    query = inp.value;
+    const pos = inp.selectionStart;
+    clearTimeout(liveT);
+    const qq = query.trim();
+    if(qq){ liveState = "loading"; liveT = setTimeout(() => runLiveSearch(qq), 450); }
+    else { liveState = "idle"; liveResults = []; liveSeq++; }
+    renderSearch();
+    const ni = $("#q"); ni.focus(); ni.setSelectionRange(pos,pos);
+  });
+  inp.addEventListener("keydown", e => {
+    if(e.key !== "Enter") return;
+    const qq = inp.value.trim(); if(!qq) return;
+    clearTimeout(liveT); runLiveSearch(qq);
+  });
+  $("#searchWrap").querySelector("[data-addcustom]").addEventListener("click", openCustom);
+  wireCommon($("#searchWrap"));
+}
+
+/* ---------- watchlist ---------- */
+function renderWatch(){
+  const items = S.watch.map(getMovie).filter(Boolean);
+  const rows = items.map(m => `<div class="row">
+      ${posterHTML(m,"p-sm")}
+      <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
+        <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
+      </button>
+      <button class="pillbtn acc" data-rate="${m.id}">Seen it</button>
+      <button class="iconbtn" data-unwatch="${m.id}" aria-label="Remove from watchlist">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>`).join("");
+  $("#watchWrap").innerHTML = `
+    <h1 class="h1">Watchlist</h1>
+    <p class="sub">Queued up for future you. Rank them once you've watched.</p>
+    ${items.length ? `<div class="card">${rows}</div>`
+      : `<div class="empty"><div class="big" aria-hidden="true">🍿</div><p>Your watchlist is empty. Browse and bookmark anything you want to see.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+  $("#watchWrap").querySelectorAll("[data-unwatch]").forEach(b => b.addEventListener("click", () => {
+    S.watch = S.watch.filter(x => x !== b.dataset.unwatch); save(); renderWatch(); toast("Removed from watchlist");
+  }));
+  wireCommon($("#watchWrap"));
+}
+
+/* ---------- profile ---------- */
+function renderProfile(){
+  const ids = allRanked();
+  const scores = ids.map(scoreOf);
+  const avg = scores.length ? (scores.reduce((a,b)=>a+b,0)/scores.length).toFixed(1) : "—";
+  const gc = {};
+  ids.forEach(id => { const m = getMovie(id); if(m && m.genre) gc[m.genre] = (gc[m.genre]||0)+1; });
+  const topGenres = Object.entries(gc).sort((a,b)=>b[1]-a[1]).slice(0,5);
+  const n = ids.length || 1;
+  const dist = [["Loved", S.loved.length, "var(--good)"],["Fine", S.fine.length, "var(--mid)"],["Not for me", S.disliked.length, "var(--bad)"]];
+  const P = S.profile || {name:"Guest", handle:"@guest", hue:172, provider:null};
+  $("#profileWrap").innerHTML = `
+    <div class="phead">
+      <div class="avatar" style="background:hsl(${P.hue} 45% 38%)">${esc((P.name[0]||"?").toUpperCase())}</div>
+      <div style="flex:1;min-width:0"><div class="pname">${esc(P.name)}</div>
+        <div class="phandle">${esc(P.handle)}${P.provider ? ` · via ${esc(P.provider)}` : ""} · member since 2026</div></div>
+      <button class="pillbtn" id="editBtn">Edit</button>
+    </div>
+    <div class="stats" style="grid-template-columns:repeat(4,1fr)">
+      <div class="stat"><div class="n">${ids.length}</div><div class="l">Ranked</div></div>
+      <div class="stat"><div class="n">${S.mates.length}</div><div class="l">Mates</div></div>
+      <div class="stat"><div class="n">${S.watch.length}</div><div class="l">Queued</div></div>
+      <div class="stat"><div class="n">${avg}</div><div class="l">Avg</div></div>
+    </div>
+    <div class="sechead">Taste breakdown</div>
+    <div class="card" style="padding:14px">
+      ${dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
+        <span class="bar"><span class="fill" style="width:${Math.round(c/n*100)}%;background:${col}"></span></span>
+        <span class="cnt">${c}</span></div>`).join("")}
+    </div>
+    ${topGenres.length ? `<div class="sechead">Most-ranked genres</div>
+      <div class="chips">${topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>` : ""}
+    ${ids.length ? `<div class="sechead">Podium</div><div class="card">${
+      ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+        <span class="rankno">${["🥇","🥈","🥉"][i]}</span>${posterHTML(m,"p-sm")}
+        <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+        ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>` : ""}
+    <div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
+      ${ids.length ? `<button class="pillbtn soft" id="shareBtn">Share my top 5</button>` : ""}
+      <button class="pillbtn" id="exportBtn">Back up data</button>
+      <button class="pillbtn" id="importBtn">Restore backup</button>
+      <button class="pillbtn" id="logoutBtn">Log out</button>
+    </div>
+    <button class="danger" id="resetBtn">Reset all my data</button>`;
+  $("#editBtn").addEventListener("click", () => openAccountForm("edit"));
+  $("#logoutBtn").addEventListener("click", () => { S.profile = null; save(); showAuth(); });
+  $("#exportBtn").addEventListener("click", () => {
+    const text = JSON.stringify({reeli:1, app:S, posters:POSTERS.cache});
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(() => toast("Backup copied — paste it somewhere safe"), () => toast("Couldn't copy here"));
+    } else toast("Couldn't copy here");
+  });
+  $("#importBtn").addEventListener("click", () => {
+    const txt = prompt("Paste your Reeli backup:");
+    if(!txt) return;
+    try{
+      const d = JSON.parse(txt);
+      if(!d || d.reeli !== 1 || !d.app || !Array.isArray(d.app.loved)) throw 0;
+      S = d.app;
+      if(!("profile" in S)) S.profile = null;
+      if(!Array.isArray(S.mates)) S.mates = [0,1,3,4];
+      Object.assign(POSTERS.cache, d.posters || {});
+      save(); savePosters(); render(cur); toast("Backup restored 🎬");
+    }catch(e){ toast("That doesn't look like a Reeli backup"); }
+  });
+  const sb = $("#shareBtn");
+  if(sb) sb.addEventListener("click", () => {
+    const top = ids.slice(0,5).map((id,i) => `${i+1}. ${getMovie(id).title} — ${scoreOf(id).toFixed(1)}`).join("\n");
+    const text = `My top 5 on Reeli 🎬\n${top}\nWhat's yours?`;
+    if(navigator.clipboard && navigator.clipboard.writeText){
+      navigator.clipboard.writeText(text).then(() => toast("Top 5 copied — paste it anywhere"), () => toast("Couldn't copy here"));
+    } else toast("Couldn't copy here");
+  });
+  $("#resetBtn").addEventListener("click", () => {
+    if(confirm("Wipe your rankings, watchlist and activity? This can't be undone.")){
+      localStorage.removeItem(KEY); localStorage.removeItem("reeli-posters");
+      S = seed(); S.loved=[];S.fine=[];S.disliked=[];S.watch=[];S.myFeed=[];S.likes={};
+      save(); showAuth();
+    }
+  });
+  wireCommon($("#profileWrap"));
+}
+
+/* ---------- account / auth (demo: lives in this browser only) ---------- */
+const AVATAR_HUES = [172, 262, 22, 335, 205, 45];
+let authPick = {hue:172, provider:null};
+function showAuth(){
+  authPick = {hue:172, provider:null};
+  renderAuth();
+  $("#auth").classList.add("on");
+}
+function hideAuth(){ $("#auth").classList.remove("on"); }
+function socialBtn(provider, bg){
+  return `<button class="socialbtn ${authPick.provider===provider?"picked":""}" data-prov="${provider}">
+    <span class="mark" style="background:${bg}">${provider[0]}</span>Continue with ${provider}</button>`;
+}
+function renderAuth(){
+  $("#auth").innerHTML = `
+    <div class="hero">
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="2.2"/>
+        <circle cx="12" cy="7.6" r="1.7" fill="var(--accent)"/><circle cx="12" cy="16.4" r="1.7" fill="var(--accent)"/>
+        <circle cx="7.6" cy="12" r="1.7" fill="var(--accent)"/><circle cx="16.4" cy="12" r="1.7" fill="var(--accent)"/>
+      </svg>
+      <span class="wordmark">Reeli</span>
+      <p class="tagline">Rank every movie you've ever seen — one head-to-head at a time.</p>
+    </div>
+    <div class="feats">
+      <div class="feat"><span class="fdot">⚔</span><span><b>No star ratings.</b> Every score is earned in head-to-head matchups.</span></div>
+      <div class="feat"><span class="fdot">🌍</span><span><b>The whole catalog.</b> Live search across a worldwide movie database.</span></div>
+      <div class="feat"><span class="fdot">🎟</span><span><b>Reelmates.</b> Your people in the audience — see how your tastes match up.</span></div>
+    </div>
+    <div class="authcard">
+      ${socialBtn("Google","#4285F4")}
+      ${socialBtn("Apple","#333")}
+      ${socialBtn("Facebook","#1877F2")}
+      <div class="ordiv">or sign up with email</div>
+      <input class="field" id="aname" placeholder="Display name" maxlength="24" autocomplete="off">
+      <input class="field" id="ahandle" placeholder="@handle (optional)" maxlength="20" autocomplete="off">
+      <input class="field" id="aemail" type="email" placeholder="Email (optional)" autocomplete="off">
+      <div class="swatches" role="radiogroup" aria-label="Avatar color">
+        ${AVATAR_HUES.map(h => `<button class="swatch ${authPick.hue===h?"cur":""}" data-hue="${h}" style="background:hsl(${h} 45% 45%)" aria-label="Avatar color"></button>`).join("")}
+      </div>
+      <button class="pillbtn acc" id="createBtn" style="padding:12px;font-size:14.5px">${authPick.provider ? "Finish signing up via "+authPick.provider : "Create account"}</button>
+    </div>
+    <button class="ghostlink" id="guestBtn">Just let me in as a guest</button>
+    <p class="authnote">Demo build: your account and rankings live only in this browser (localStorage). Nothing is sent anywhere, and the social buttons simulate sign-in without contacting those services.</p>`;
+  const nameEl = $("#aname"), handleEl = $("#ahandle"), emailEl = $("#aemail");
+  $("#auth").querySelectorAll("[data-prov]").forEach(b => b.addEventListener("click", () => {
+    const keep = {name:nameEl.value, handle:handleEl.value, email:emailEl.value};
+    authPick.provider = authPick.provider === b.dataset.prov ? null : b.dataset.prov;
+    renderAuth();
+    $("#aname").value = keep.name; $("#ahandle").value = keep.handle; $("#aemail").value = keep.email;
+    if(authPick.provider){ toast(authPick.provider + " connected (demo)"); $("#aname").focus(); }
+  }));
+  $("#auth").querySelectorAll("[data-hue]").forEach(b => b.addEventListener("click", () => {
+    authPick.hue = +b.dataset.hue;
+    $("#auth").querySelectorAll(".swatch").forEach(s => s.classList.toggle("cur", +s.dataset.hue === authPick.hue));
+  }));
+  $("#createBtn").addEventListener("click", () => {
+    const name = nameEl.value.trim();
+    if(!name){ nameEl.focus(); nameEl.placeholder = "Display name — required"; return; }
+    let handle = handleEl.value.trim().replace(/^@+/,"");
+    if(!handle) handle = name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14) || "cinephile";
+    S.profile = {name, handle:"@"+handle, hue:authPick.hue, provider:authPick.provider, email:emailEl.value.trim()||null};
+    save(); hideAuth(); nav("feed");
+    toast(`Welcome to Reeli, ${name} 🎬`);
+  });
+  $("#guestBtn").addEventListener("click", () => {
+    S.profile = {name:"Guest", handle:"@guest", hue:172, provider:null, email:null};
+    save(); hideAuth(); nav("feed");
+  });
+}
+function openAccountForm(){
+  const P = S.profile; if(!P) return;
+  openSheet(`
+    <h1 class="h1">Edit profile</h1>
+    <div style="display:grid;gap:10px;margin-top:10px">
+      <input class="field" id="ename" value="${esc(P.name)}" maxlength="24">
+      <input class="field" id="ehandle" value="${esc(P.handle)}" maxlength="20">
+      <div class="swatches">${AVATAR_HUES.map(h => `<button class="swatch ${P.hue===h?"cur":""}" data-ehue="${h}" style="background:hsl(${h} 45% 45%)" aria-label="Avatar color"></button>`).join("")}</div>
+      <div style="display:flex;gap:9px"><button class="pillbtn acc" id="esave">Save</button><button class="pillbtn" id="ecancel">Cancel</button></div>
+    </div>`);
+  let hue = P.hue;
+  sheet.querySelectorAll("[data-ehue]").forEach(b => b.addEventListener("click", () => {
+    hue = +b.dataset.ehue;
+    sheet.querySelectorAll(".swatch").forEach(s => s.classList.toggle("cur", +s.dataset.ehue === hue));
+  }));
+  $("#ecancel").addEventListener("click", closeSheet);
+  $("#esave").addEventListener("click", () => {
+    const name = $("#ename").value.trim() || P.name;
+    let handle = $("#ehandle").value.trim().replace(/^@+/,"") || P.handle.slice(1);
+    S.profile = {...P, name, handle:"@"+handle, hue};
+    save(); closeSheet(); renderProfile(); toast("Profile updated");
+  });
+}
+
+/* ---------- common wiring ---------- */
+function wireCommon(root){
+  root.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.open)));
+  root.querySelectorAll("[data-rate]").forEach(b => b.addEventListener("click", e => { e.stopPropagation(); startRate(b.dataset.rate); }));
+  root.querySelectorAll("[data-watch]").forEach(b => b.addEventListener("click", e => {
+    e.stopPropagation();
+    const id = b.dataset.watch;
+    if(S.watch.includes(id)){ S.watch = S.watch.filter(x=>x!==id); toast("Removed from watchlist"); }
+    else { ensureSaved(id); S.watch.unshift(id); toast("Added to watchlist 🔖"); }
+    save(); render(cur);
+  }));
+  root.querySelectorAll("[data-like]").forEach(b => b.addEventListener("click", () => {
+    const k = b.dataset.like;
+    S.likes[k] = !S.likes[k]; if(!S.likes[k]) delete S.likes[k];
+    save(); renderFeed();
+  }));
+  root.querySelectorAll("[data-gosearch]").forEach(b => b.addEventListener("click", () => nav("search")));
+}
+
+/* ---------- overlay ---------- */
+const overlay = $("#overlay"), sheet = $("#sheet");
+function openSheet(html){ sheet.innerHTML = `<div class="grab"></div>` + html; overlay.classList.add("on"); hydratePosters(sheet); }
+function closeSheet(){ overlay.classList.remove("on"); sheet.innerHTML = ""; }
+overlay.addEventListener("click", e => { if(e.target === overlay) closeSheet(); });
+document.addEventListener("keydown", e => { if(e.key === "Escape") closeSheet(); });
+
+/* ---------- movie detail ---------- */
+let detailId = null;
+function openDetail(id){
+  const m = getMovie(id); if(!m) return;
+  detailId = id;
+  const ranked = isRanked(id), inWatch = S.watch.includes(id);
+  enrich(id, ok => { if(ok && detailId === id && overlay.classList.contains("on")) openDetail(id); });
+  openSheet(`
+    <div class="dhead">
+      ${posterHTML(m,"p-lg")}
+      <div class="meta">
+        <h2>${esc(m.title)}</h2>
+        <div class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}${m.dir && m.dir !== "—" ? `<br>Directed by ${esc(m.dir)}` : ""}
+          ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
+        ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
+          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked().length}<br>on your list</div></div>` : ""}
+      </div>
+    </div>
+    ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>` : ""}
+    <div class="dactions">
+      ${ranked
+        ? `<button class="pillbtn acc" data-a="rerate">Re-rank</button>
+           <button class="pillbtn" data-a="unrank">Remove ranking</button>`
+        : `<button class="pillbtn acc" data-a="rate">Rank it</button>
+           <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
+      <button class="pillbtn" data-a="close">Close</button>
+    </div>`);
+  sheet.querySelectorAll("[data-a]").forEach(b => b.addEventListener("click", () => {
+    const a = b.dataset.a;
+    if(a === "close") closeSheet();
+    else if(a === "rate" || a === "rerate"){ startRate(id); }
+    else if(a === "unrank"){ removeRanking(id); save(); closeSheet(); render(cur); toast("Ranking removed"); }
+    else if(a === "watch"){
+      if(S.watch.includes(id)){ S.watch = S.watch.filter(x=>x!==id); } else { ensureSaved(id); S.watch.unshift(id); toast("Added to watchlist 🔖"); }
+      save(); openDetail(id); render(cur);
+    }
+  }));
+}
+
+/* ---------- custom add ---------- */
+function openCustom(){
+  openSheet(`
+    <h1 class="h1">Add a movie</h1>
+    <p class="sub">It joins your personal database and is ready to rank.</p>
+    <div style="display:grid;gap:10px">
+      <input id="ctitle" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <input id="cyear" placeholder="Year" inputmode="numeric" maxlength="4" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <input id="cgenre" placeholder="Genre (optional)" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <div style="display:flex;gap:9px;margin-top:4px">
+        <button class="pillbtn acc" id="csave">Add &amp; rank</button>
+        <button class="pillbtn" id="ccancel">Cancel</button>
+      </div>
+    </div>`);
+  $("#ccancel").addEventListener("click", closeSheet);
+  $("#csave").addEventListener("click", () => {
+    const t = $("#ctitle").value.trim();
+    if(!t){ $("#ctitle").focus(); return; }
+    const y = parseInt($("#cyear").value,10);
+    let hash = 0; for(const ch of t) hash = (hash*31 + ch.charCodeAt(0)) % 360;
+    const m = {id:"c_"+Date.now(), title:t, year:(y>=1888 && y<=2030)?y:"—", genre:$("#cgenre").value.trim()||"Film", dir:"—", hue:hash};
+    S.custom.push(m); save();
+    startRate(m.id);
+  });
+}
+
+/* ---------- rating flow ---------- */
+let R = null; // {id, bucket, lo, hi}
+function startRate(id){
+  const m = getMovie(id); if(!m) return;
+  R = {id};
+  openSheet(`
+    <div class="step">Step 1 of 2</div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:10px;margin:16px 0 4px">
+      ${posterHTML(m,"p-lg")}
+      <h1 class="h1" style="text-align:center;margin:2px 0 0">${esc(m.title)}</h1>
+      <p class="sub" style="text-align:center;margin:0">How was it?</p>
+    </div>
+    <div class="buckets">
+      <button class="bucket" data-b="loved"><span class="dot" style="background:var(--good-soft)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--good)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5c1 1.3 2.2 2 3.5 2s2.5-.7 3.5-2"/><path d="M9 9.6h.01M15 9.6h.01" stroke-width="2.6"/></svg></span>
+        <span><b>Loved it</b><span>The kind you tell people about</span></span></button>
+      <button class="bucket" data-b="fine"><span class="dot" style="background:var(--mid-soft)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--mid)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 15h7"/><path d="M9 9.6h.01M15 9.6h.01" stroke-width="2.6"/></svg></span>
+        <span><b>It was fine</b><span>Watchable. Forgettable. Fine.</span></span></button>
+      <button class="bucket" data-b="disliked"><span class="dot" style="background:var(--bad-soft)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--bad)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 16c1-1.3 2.2-2 3.5-2s2.5.7 3.5 2"/><path d="M9 9.6h.01M15 9.6h.01" stroke-width="2.6"/></svg></span>
+        <span><b>Not for me</b><span>Two hours you want back</span></span></button>
+    </div>`);
+  sheet.querySelectorAll("[data-b]").forEach(b => b.addEventListener("click", () => pickBucket(b.dataset.b)));
+}
+function pickBucket(bucket){
+  removeRanking(R.id); // re-rank support
+  R.bucket = bucket;
+  R.lo = 0; R.hi = S[bucket].length;
+  R.n = 0;
+  stepCompare();
+}
+function stepCompare(){
+  if(R.lo >= R.hi){ placeAt(R.lo); return; }
+  const mid = (R.lo + R.hi) >> 1;
+  const a = getMovie(R.id), b = getMovie(S[R.bucket][mid]);
+  if(!b){ placeAt(R.lo); return; }
+  R.n++;
+  const total = S[R.bucket].length;
+  const left = Math.max(0, Math.ceil(Math.log2(Math.max(R.hi - R.lo, 1))) - 1);
+  openSheet(`
+    <div class="step">Matchup ${R.n} · ${left ? "about " + left + " more after this" : "last one"} · ${total} ${total===1?"movie":"movies"} you ${R.bucket === "loved" ? "loved" : R.bucket === "fine" ? "found fine" : "didn't like"}</div>
+    <h1 class="h1" style="text-align:center;margin-top:14px">Which did you like more?</h1>
+    <div class="faceoff">
+      <button class="contender" data-pick="new">${posterHTML(a,"p-md")}<span class="t">${esc(a.title)}</span><span class="d">${a.year}</span></button>
+      <span class="vs">VS</span>
+      <button class="contender" data-pick="old">${posterHTML(b,"p-md")}<span class="t">${esc(b.title)}</span><span class="d">${b.year}</span></button>
+    </div>
+    <button class="tiebtn" data-pick="tie">Too close to call</button>
+    <span class="kbdhint"><b>←</b> left wins · <b>→</b> right wins · <b>T</b> too close</span>`);
+  sheet.querySelectorAll("[data-pick]").forEach(btn => btn.addEventListener("click", () => {
+    const p = btn.dataset.pick;
+    if(p === "new") R.hi = mid;
+    else if(p === "old") R.lo = mid + 1;
+    else { placeAt(mid + 1); return; }
+    stepCompare();
+  }));
+}
+function placeAt(idx){
+  ensureSaved(R.id);
+  S[R.bucket].splice(idx, 0, R.id);
+  S.watch = S.watch.filter(x => x !== R.id);
+  const m = getMovie(R.id), sc = scoreOf(R.id), rk = rankOf(R.id);
+  S.myFeed.unshift({movie:R.id, score:sc, time:"just now", note:"", likes:0, rank:rk});
+  if(S.myFeed.length > 6) S.myFeed.pop();
+  save();
+  openSheet(`
+    <div class="result">
+      ${posterHTML(m,"p-lg")}
+      <h2>${esc(m.title)}</h2>
+      ${scoreHTML(sc,"bigscore")}
+      <p>Locked in at <b>#${rk}</b> of ${allRanked().length} on your list.<br>Scores shift as your ranking grows — that's the fun part.</p>
+      <div style="display:flex;gap:9px;margin-top:6px">
+        <button class="pillbtn acc" id="doneBtn">See my ranking</button>
+        <button class="pillbtn" id="moreBtn">Rank another</button>
+        <button class="pillbtn" id="undoBtn">Undo</button>
+      </div>
+    </div>`);
+  const placedId = R.id;
+  $("#doneBtn").addEventListener("click", () => { closeSheet(); nav("ranks"); });
+  $("#moreBtn").addEventListener("click", () => { closeSheet(); nav("search"); });
+  $("#undoBtn").addEventListener("click", () => {
+    removeRanking(placedId);
+    if(S.myFeed.length && S.myFeed[0].movie === placedId) S.myFeed.shift();
+    save(); closeSheet(); render(cur); toast("Ranking undone");
+  });
+  R = null;
+}
+
+/* ---------- theme toggle: auto → light → dark ---------- */
+const THEME_KEY = "reeli-theme";
+const THEME_ICON = {auto:"◐", light:"☀", dark:"☾"};
+function applyTheme(v){
+  if(v === "light" || v === "dark") document.documentElement.dataset.theme = v;
+  else delete document.documentElement.dataset.theme;
+  const b = $("#themeBtn");
+  b.textContent = THEME_ICON[v] || THEME_ICON.auto;
+  b.title = "Theme: " + v;
+}
+let themeMode = localStorage.getItem(THEME_KEY) || "auto";
+applyTheme(themeMode);
+$("#themeBtn").addEventListener("click", () => {
+  themeMode = themeMode === "auto" ? "light" : themeMode === "light" ? "dark" : "auto";
+  try{ localStorage.setItem(THEME_KEY, themeMode); }catch(e){}
+  applyTheme(themeMode);
+  toast("Theme: " + themeMode);
+});
+
+/* ---------- keyboard shortcuts ---------- */
+document.addEventListener("keydown", e => {
+  const tag = (e.target.tagName || "").toLowerCase();
+  if(tag === "input" || tag === "textarea") return;
+  if(overlay.classList.contains("on")){
+    if(!sheet.querySelector('[data-pick="new"]')) return;
+    const pick = k => { const el = sheet.querySelector(`[data-pick="${k}"]`); if(el){ el.click(); e.preventDefault(); } };
+    if(e.key === "ArrowLeft") pick("new");
+    else if(e.key === "ArrowRight") pick("old");
+    else if(e.key.toLowerCase() === "t") pick("tie");
+    return;
+  }
+  if(e.key === "/"){
+    if(cur !== "search") nav("search");
+    const q = $("#q"); if(q){ q.focus(); e.preventDefault(); }
+  }
+});
+
+/* ---------- boot ---------- */
+S.watch = S.watch.filter(id => getMovie(id));
+updateBadge();
+nav("feed");
+if(!S.profile) showAuth();
+</script>
