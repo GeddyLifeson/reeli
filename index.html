@@ -364,6 +364,7 @@
     <button data-nav="profile"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4 21c1.5-3.6 4.4-5.5 8-5.5s6.5 1.9 8 5.5"/></svg>Profile</button>
   </nav>
 
+  <div class="auth" id="gate"></div>
   <div class="overlay" id="overlay" role="dialog" aria-modal="true"><div class="sheet" id="sheet"></div></div>
   <div class="toast" id="toast" role="status"></div>
 </div>
@@ -465,6 +466,7 @@ function seed(){
   return {
     profile:null,
     onboarded:false,
+    guestChosen:false,
     taste:null,
     loved:[], fine:[], disliked:[],
     watch:[],
@@ -482,6 +484,7 @@ function load(){
         if(!("profile" in s)) s.profile = null;
         if(!("onboarded" in s)) s.onboarded = true; // returning visitor: don't re-onboard
         if(!("taste" in s)) s.taste = null;
+        if(!("guestChosen" in s)) s.guestChosen = false;
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
         // untouched, clear them so real users start with their own list
         if(s.loved.join() === "parasite,whiplash,spiderverse,madmax" &&
@@ -974,6 +977,44 @@ async function toggleCloudLike(userId, movieId, btn){
   refreshCloudFeed();
 }
 
+/* ---- entry gate: sign up / log in up front, guest is an explicit choice ---- */
+function showGate(){
+  $("#gate").innerHTML = `
+    <div class="hero">
+      <svg width="46" height="46" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="var(--accent)" stroke-width="2.2"/>
+        <circle cx="12" cy="7.6" r="1.7" fill="var(--accent)"/><circle cx="12" cy="16.4" r="1.7" fill="var(--accent)"/>
+        <circle cx="7.6" cy="12" r="1.7" fill="var(--accent)"/><circle cx="16.4" cy="12" r="1.7" fill="var(--accent)"/>
+      </svg>
+      <span class="wordmark">Reeli</span>
+      <p class="tagline">Rank every movie you've ever seen — one head-to-head at a time.</p>
+    </div>
+    <div class="feats">
+      <div class="feat"><span class="fdot">⚔</span><span><b>No star ratings.</b> Every score is earned in head-to-head matchups.</span></div>
+      <div class="feat"><span class="fdot">🌍</span><span><b>The whole catalog.</b> Live search across a worldwide movie database.</span></div>
+      <div class="feat"><span class="fdot">🎟</span><span><b>Reelmates.</b> Follow real people and see rankings as they happen.</span></div>
+    </div>
+    <div class="authcard">
+      <button class="pillbtn acc" id="gateSignup" style="padding:13px;font-size:15px">Create account</button>
+      <button class="pillbtn" id="gateLogin" style="padding:13px;font-size:15px">Log in</button>
+    </div>
+    <button class="ghostlink" id="gateGuest">Continue as guest</button>
+    <p class="authnote">Accounts sync your list and let friends find you. Guest mode saves to this browser only — you can create an account later and your list carries over.</p>`;
+  $("#gate").classList.add("on");
+  $("#gateSignup").addEventListener("click", () => openAuthSheet("signup"));
+  $("#gateLogin").addEventListener("click", () => openAuthSheet("login"));
+  $("#gateGuest").addEventListener("click", () => {
+    S.guestChosen = true; save(); hideGate();
+    if(!S.onboarded) openOnboarding(0);
+  });
+}
+function hideGate(){ $("#gate").classList.remove("on"); }
+function afterAuthEntry(){
+  hideGate();
+  if(!S.onboarded) openOnboarding(0);
+  else render(cur);
+}
+
 /* ---- auth UI ---- */
 function openAuthSheet(mode){
   const signup = mode === "signup";
@@ -1015,7 +1056,7 @@ function openAuthSheet(mode){
       closeSheet();
       await pullCloud();
       if(!CLOUD.profile) openClaimHandle();
-      else { toast("Welcome back, " + CLOUD.profile.display_name + " 🎬"); render(cur); }
+      else { toast("Welcome back, " + CLOUD.profile.display_name + " 🎬"); afterAuthEntry(); }
     }catch(e){ err("Network hiccup — try again."); }
     finally{ const b = $("#ausubmit"); if(b) b.textContent = signup ? "Sign up" : "Log in"; }
   });
@@ -1049,16 +1090,18 @@ function openClaimHandle(){
     if(!r.ok) return err("Couldn't save — try again.");
     CLOUD.profile = {id:myId(), handle, display_name:name, avatar_hue:hue};
     S.profile = {name, handle:"@"+handle, hue};
-    save(); closeSheet(); render(cur);
+    save(); closeSheet();
     toast(`Welcome to Reeli, ${name} 🎬`);
     queueSync();
+    afterAuthEntry();
   });
 }
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){}
   saveAuth(null);
   CLOUD.profile = null; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set();
-  S.profile = null; save(); render(cur); toast("Logged out");
+  S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
+  showGate();
 }
 function feedItemHTML(f, idx){
   const m = getMovie(f.movie); if(!m) return "";
@@ -1792,6 +1835,12 @@ document.addEventListener("keydown", e => {
 S.watch = S.watch.filter(id => getMovie(id));
 updateBadge();
 nav("feed");
-if(!S.onboarded) openOnboarding(0);
-if(authed()) pullCloud().then(() => { if(!CLOUD.profile && authed()) openClaimHandle(); else render(cur); });
+if(authed()){
+  if(!S.onboarded) openOnboarding(0);
+  pullCloud().then(() => { if(!CLOUD.profile && authed()) openClaimHandle(); else render(cur); });
+} else if(!S.guestChosen){
+  showGate();
+} else if(!S.onboarded){
+  openOnboarding(0);
+}
 </script>
