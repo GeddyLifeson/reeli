@@ -553,8 +553,11 @@ function cineSearch(term, cb){
     d => cb(d && Array.isArray(d.metas) ? d.metas : null));
 }
 function cineMeta(id, cb){
-  getJSON(CINE + "/meta/movie/" + encodeURIComponent(id) + ".json",
-    d => cb(d && d.meta ? d.meta : null));
+  const url = CINE + "/meta/movie/" + encodeURIComponent(id) + ".json";
+  getJSON(url, d => {
+    if(d && d.meta) cb(d.meta);
+    else setTimeout(() => getJSON(url, d2 => cb(d2 && d2.meta ? d2.meta : null)), 900); // one retry for transient failures
+  });
 }
 function normT(s){ return String(s).toLowerCase().replace(/[^a-z0-9]+/g," ").trim(); }
 function cineToMovie(r){
@@ -565,21 +568,40 @@ function cineToMovie(r){
 }
 /* one-line meta under a title: skip blanks */
 function mline(m){ return [m.year, m.genre, m.dir].filter(x => x && x !== "—").join(" · "); }
-/* fill in genre/director/description for a catalog movie, then re-render */
+/* fill in description/rating/runtime for ANY movie: catalog ids go straight
+   to the meta endpoint; built-in/custom titles resolve their IMDb id first
+   (reusing the poster cache's stored id when available) */
+const ENRICHING = new Set();
 function enrich(id, after){
   const m = getMovie(id);
-  if(!m || m.enriched || !/^tt\d+$/.test(id)){ if(after) after(false); return; }
-  cineMeta(id, meta => {
+  // in-flight guard: a second open while fetching must not start a parallel chain
+  if(!m || m.enriched || ENRICHING.has(id)){ if(after) after(false); return; }
+  ENRICHING.add(id);
+  const finish = meta => {
+    ENRICHING.delete(id);
     if(meta){
-      m.genre = (meta.genres && meta.genres[0]) || m.genre;
-      m.dir = (meta.director && meta.director[0]) || m.dir;
-      m.desc = meta.description || null;
+      if(!m.genre || m.genre === "—" || m.genre === "Film") m.genre = (meta.genres && meta.genres[0]) || m.genre;
+      if(!m.dir || m.dir === "—") m.dir = (meta.director && meta.director[0]) || m.dir;
+      m.desc = meta.description || m.desc || null;
       m.imdb = meta.imdbRating || null;
       m.runtime = meta.runtime || null;
       m.enriched = true;
       if(S.custom.some(x => x.id === id)) save();
     }
     if(after) after(!!meta);
+  };
+  const withTT = tt => tt ? cineMeta(tt, finish) : finish(null);
+  if(/^tt\d+$/.test(id)){ withTT(id); return; }
+  const c = cacheEntry(id);
+  if(c && c.tt){ withTT(c.tt); return; }
+  cineSearch(m.title, metas => {
+    const hit = metas ? pickMeta(metas, m.title, m.year) : null;
+    const tt = hit ? (hit.imdb_id || (/^tt\d+$/.test(hit.id || "") ? hit.id : null)) : null;
+    if(tt){ // opportunistically fill the poster cache from the same lookup
+      POSTERS.cache[id] = {u: hit.poster || metahubPoster(tt), tt};
+      savePosters();
+    }
+    withTT(tt);
   });
 }
 
@@ -589,7 +611,7 @@ const POSTERS = (() => {
   try{ cache = JSON.parse(localStorage.getItem("reeli-posters")||"{}"); }catch(e){}
   // "no match" verdicts don't persist across sessions — only real poster URLs do
   for(const k of Object.keys(cache)) if(cache[k] === "x") delete cache[k];
-  return { cache, failed:new Set(), q:[], queued:new Set(), busy:false };
+  return { cache, failed:new Set(), fails:{}, q:[], queued:new Set(), busy:false };
 })();
 function savePosters(){ try{ localStorage.setItem("reeli-posters", JSON.stringify(POSTERS.cache)); }catch(e){} }
 function hydratePosters(root){
@@ -650,7 +672,12 @@ function pickMeta(metas, title, year){
     if(r.poster) s += 5;
     if(s > bestScore){ bestScore = s; best = r; }
   }
-  return bestScore >= 60 ? best : null;
+  // 55 keeps subtitle variants ("Dune: Part One" → "Dune" 2021, score 58)
+  // while still rejecting title-squatters (the Se7en parody scores 48)
+  return bestScore >= 55 ? best : null;
+}
+function applyCachedPoster(id){
+  document.querySelectorAll(`img.pimg[data-pid="${CSS.escape(id)}"]`).forEach(img => setPoster(img, cacheEntry(id)));
 }
 function pumpPosters(){
   if(POSTERS.busy || !POSTERS.q.length) return;
@@ -658,17 +685,28 @@ function pumpPosters(){
   const id = POSTERS.q.shift();
   const m = getMovie(id);
   if(!m){ POSTERS.busy = false; POSTERS.queued.delete(id); pumpPosters(); return; }
+  // catalog ids don't need a search — the poster CDN is keyed by IMDb id
+  if(/^tt\d+$/.test(id)){
+    POSTERS.cache[id] = {u: metahubPoster(id), tt: id};
+    savePosters(); applyCachedPoster(id);
+    POSTERS.queued.delete(id);
+    POSTERS.busy = false; pumpPosters(); return;
+  }
   cineSearch(m.title, metas => {
-    if(metas === null){ POSTERS.failed.add(id); }
-    else {
+    if(metas === null){
+      // transient failure: retry up to 2 more times before giving up
+      const n = (POSTERS.fails[id] = (POSTERS.fails[id] || 0) + 1);
+      if(n < 3){ POSTERS.q.push(id); }
+      else { POSTERS.failed.add(id); POSTERS.queued.delete(id); }
+    } else {
       const hit = pickMeta(metas, m.title, m.year);
       const tt = hit ? (hit.imdb_id || (/^tt\d+$/.test(hit.id||"") ? hit.id : null)) : null;
       POSTERS.cache[id] = hit ? {u: hit.poster || metahubPoster(tt), tt} : "x";
       savePosters();
-      if(hit) document.querySelectorAll(`img.pimg[data-pid="${CSS.escape(id)}"]`).forEach(img => setPoster(img, cacheEntry(id)));
+      if(hit) applyCachedPoster(id);
+      POSTERS.queued.delete(id);
     }
-    POSTERS.queued.delete(id);
-    setTimeout(() => { POSTERS.busy = false; pumpPosters(); }, 250);
+    setTimeout(() => { POSTERS.busy = false; pumpPosters(); }, 400);
   });
 }
 function scoreHTML(sc, extra){ return `<div class="score ${scoreClass(sc)} ${extra||""}">${sc.toFixed(1)}</div>`; }
@@ -1218,7 +1256,8 @@ function openDetail(id){
           ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked().length}<br>on your list</div></div>` : ""}
       </div>
     </div>
-    ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>` : ""}
+    ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
+      : !m.enriched ? `<p class="sub" style="margin:0 0 14px;opacity:.6">Loading details…</p>` : ""}
     <div class="dactions">
       ${ranked
         ? `<button class="pillbtn acc" data-a="rerate">Re-rank</button>
