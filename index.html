@@ -495,7 +495,7 @@ function load(){
   }catch(e){}
   return seed();
 }
-function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} updateBadge(); }
+function save(){ try{ localStorage.setItem(KEY, JSON.stringify(S)); }catch(e){} updateBadge(); if(typeof queueSync === "function") queueSync(); }
 function updateBadge(){
   const b = document.getElementById("watchBadge");
   if(b) b.textContent = S.watch.length ? String(S.watch.length) : "";
@@ -747,6 +747,7 @@ function nav(to){
   document.querySelectorAll(".nav [data-nav]").forEach(b => b.classList.toggle("cur", b.dataset.nav === to));
   $("#screenTag").textContent = TAGS[to];
   render(to);
+  if(to === "feed" && authed()) refreshCloudFeed();
   window.scrollTo({top:0});
 }
 document.querySelectorAll(".nav [data-nav]").forEach(b => b.addEventListener("click", () => nav(b.dataset.nav)));
@@ -756,30 +757,331 @@ function render(which){
   hydratePosters($("#scr-"+which));
 }
 
-/* ---------- feed + reelmates (real accounts only) ----------
-   BACKEND is the seam for the Supabase integration: when `enabled` flips on,
-   people search, follows, and the shared feed run against the real database.
-   Until then those surfaces show an honest "accounts are launching" state —
-   no fake users, no fake activity. */
+/* ---------- Supabase backend: real accounts, cloud sync, real Reelmates ----------
+   Plain REST (auth + PostgREST) — no SDK. The anon key below is publishable by
+   design; row-level security in the database is what protects the data. */
+const SUPA_URL = "https://mnulgfeeqyjkewmvriiv.supabase.co";
+const SUPA_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im1udWxnZmVlcXlqa2V3bXZyaWl2Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ4NDE2MTAsImV4cCI6MjEwMDQxNzYxMH0.7NLxMKa_1QJwkU7WZCsuQYCTTmuMv_7BbwEfbzvc-SA";
+const AUTH_KEY = "reeli-auth";
+let AUTH = null;
+try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){}
+const CLOUD = { profile:null, follows:new Set(), feed:[], myLikes:new Set() };
+function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){} }
+function authed(){ return !!(AUTH && AUTH.access_token); }
+function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
+
+async function refreshSession(){
+  if(!AUTH || !AUTH.refresh_token) return false;
+  try{
+    const r = await fetch(SUPA_URL + "/auth/v1/token?grant_type=refresh_token", {
+      method:"POST", headers:{apikey:SUPA_KEY, "Content-Type":"application/json"},
+      body: JSON.stringify({refresh_token: AUTH.refresh_token})});
+    if(!r.ok){ if(r.status === 400 || r.status === 401) saveAuth(null); return false; }
+    const d = await r.json();
+    saveAuth({access_token:d.access_token, refresh_token:d.refresh_token,
+      expires_at: Math.floor(Date.now()/1000) + (d.expires_in || 3600), user:d.user});
+    return true;
+  }catch(e){ return false; }
+}
+async function sb(path, opts){
+  opts = opts || {};
+  if(authed() && AUTH.expires_at && Date.now()/1000 > AUTH.expires_at - 60) await refreshSession();
+  const headers = Object.assign({
+    apikey: SUPA_KEY,
+    Authorization: "Bearer " + (authed() ? AUTH.access_token : SUPA_KEY),
+    "Content-Type": "application/json",
+  }, opts.headers || {});
+  let r = await fetch(SUPA_URL + path, Object.assign({}, opts, {headers}));
+  if(r.status === 401 && authed() && await refreshSession()){
+    headers.Authorization = "Bearer " + AUTH.access_token;
+    r = await fetch(SUPA_URL + path, Object.assign({}, opts, {headers}));
+  }
+  return r;
+}
+function relTime(ts){
+  const s = (Date.now() - new Date(ts).getTime()) / 1000;
+  if(s < 90) return "just now";
+  if(s < 3600) return Math.round(s/60) + "m";
+  if(s < 86400) return Math.round(s/3600) + "h";
+  if(s < 604800) return Math.round(s/86400) + "d";
+  return new Date(ts).toLocaleDateString();
+}
+function rowToMovie(r){
+  let hash = 0; for(const ch of r.title) hash = (hash*31 + ch.charCodeAt(0)) % 360;
+  return {id:r.movie_id, title:r.title, year:r.year || "—", genre:r.genre || "",
+    dir:r.director || "", hue:hash, poster:r.poster || null};
+}
+function movieToRow(id, bucket, pos){
+  const m = getMovie(id); if(!m) return null;
+  const c = cacheEntry(id);
+  return {user_id: myId(), movie_id: id, title: m.title,
+    year: typeof m.year === "number" ? m.year : null,
+    genre: m.genre || null, director: m.dir || null,
+    poster: m.poster || (c ? c.u : null),
+    bucket, position: pos, score: scoreOf(id)};
+}
+
+/* ---- cloud sync: debounced full reconcile of rankings + watchlist ---- */
+let syncT = null, SYNC_TOUCH = null, PULLING = false;
+function queueSync(){
+  if(!authed() || PULLING) return;
+  clearTimeout(syncT);
+  syncT = setTimeout(syncCloud, 1200);
+}
+async function syncCloud(){
+  if(!authed()) return;
+  try{
+    const rows = [];
+    for(const b of ["loved","fine","disliked"])
+      S[b].forEach((id, i) => { const r = movieToRow(id, b, i); if(r) rows.push(r); });
+    if(rows.length)
+      await sb("/rest/v1/rankings?on_conflict=user_id,movie_id", {method:"POST",
+        headers:{Prefer:"resolution=merge-duplicates"}, body: JSON.stringify(rows)});
+    const cr = await sb("/rest/v1/rankings?user_id=eq." + myId() + "&select=movie_id");
+    if(cr.ok){
+      const cloudIds = (await cr.json()).map(x => x.movie_id);
+      const gone = cloudIds.filter(id => !isRanked(id));
+      if(gone.length)
+        await sb("/rest/v1/rankings?user_id=eq." + myId() + "&movie_id=in.(" +
+          gone.map(encodeURIComponent).join(",") + ")", {method:"DELETE"});
+    }
+    if(SYNC_TOUCH && isRanked(SYNC_TOUCH)){
+      await sb("/rest/v1/rankings?user_id=eq." + myId() + "&movie_id=eq." + encodeURIComponent(SYNC_TOUCH),
+        {method:"PATCH", body: JSON.stringify({updated_at: new Date().toISOString()})});
+      SYNC_TOUCH = null;
+    }
+    const wrows = S.watch.map(id => { const m = getMovie(id); const c = cacheEntry(id);
+      return m ? {user_id:myId(), movie_id:id, title:m.title, year: typeof m.year==="number"?m.year:null,
+        genre:m.genre||null, director:m.dir||null, poster:m.poster||(c?c.u:null)} : null; }).filter(Boolean);
+    if(wrows.length)
+      await sb("/rest/v1/watchlist?on_conflict=user_id,movie_id", {method:"POST",
+        headers:{Prefer:"resolution=merge-duplicates"}, body: JSON.stringify(wrows)});
+    const wr = await sb("/rest/v1/watchlist?user_id=eq." + myId() + "&select=movie_id");
+    if(wr.ok){
+      const goneW = (await wr.json()).map(x => x.movie_id).filter(id => !S.watch.includes(id));
+      if(goneW.length)
+        await sb("/rest/v1/watchlist?user_id=eq." + myId() + "&movie_id=in.(" +
+          goneW.map(encodeURIComponent).join(",") + ")", {method:"DELETE"});
+    }
+    if(CLOUD.profile && S.taste)
+      await sb("/rest/v1/profiles?id=eq." + myId(), {method:"PATCH", body: JSON.stringify({taste: S.taste})});
+  }catch(e){}
+}
+
+/* ---- login-time pull: cloud wins, local-only guest data is merged in ---- */
+async function pullCloud(){
+  if(!authed()) return;
+  PULLING = true;
+  try{
+    const pr = await sb("/rest/v1/profiles?id=eq." + myId() + "&select=*");
+    CLOUD.profile = pr.ok ? (await pr.json())[0] || null : null;
+    if(CLOUD.profile){
+      S.profile = {name: CLOUD.profile.display_name, handle: "@"+CLOUD.profile.handle, hue: CLOUD.profile.avatar_hue};
+      if(CLOUD.profile.taste && !S.taste) S.taste = CLOUD.profile.taste;
+    }
+    const fr = await sb("/rest/v1/follows?follower=eq." + myId() + "&select=followee");
+    CLOUD.follows = fr.ok ? new Set((await fr.json()).map(x => x.followee)) : new Set();
+    const rr = await sb("/rest/v1/rankings?user_id=eq." + myId() + "&select=*&order=bucket,position");
+    if(rr.ok){
+      const rows = await rr.json();
+      if(rows.length){
+        const localOnly = {loved:[], fine:[], disliked:[]};
+        for(const b of ["loved","fine","disliked"])
+          localOnly[b] = S[b].filter(id => !rows.some(r => r.movie_id === id));
+        S.loved = []; S.fine = []; S.disliked = [];
+        rows.sort((a,b) => a.position - b.position).forEach(r => {
+          if(!getMovie(r.movie_id)){ const m = rowToMovie(r); S.custom.push(m); }
+          if(S[r.bucket]) S[r.bucket].push(r.movie_id);
+        });
+        for(const b of ["loved","fine","disliked"]) S[b] = S[b].concat(localOnly[b]);
+      }
+    }
+    const wl = await sb("/rest/v1/watchlist?user_id=eq." + myId() + "&select=*&order=added_at.desc");
+    if(wl.ok){
+      const rows = await wl.json();
+      rows.forEach(r => { if(!getMovie(r.movie_id)) S.custom.push(rowToMovie(r)); });
+      S.watch = [...new Set([...rows.map(r => r.movie_id), ...S.watch])];
+    }
+    const lk = await sb("/rest/v1/likes?user_id=eq." + myId() + "&select=ranking_user,ranking_movie");
+    CLOUD.myLikes = lk.ok ? new Set((await lk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
+    save();
+  }catch(e){}
+  PULLING = false;
+  queueSync(); // reconcile any local-only data up to the cloud
+  refreshCloudFeed();
+}
+async function refreshCloudFeed(){
+  if(!authed() || !CLOUD.follows.size){ CLOUD.feed = []; if(cur === "feed") renderFeed(); return; }
+  try{
+    const ids = [...CLOUD.follows].join(",");
+    const r = await sb("/rest/v1/rankings?user_id=in.(" + ids + ")" +
+      "&select=movie_id,title,year,genre,director,poster,score,updated_at,user_id,note," +
+      "profiles!rankings_user_id_fkey!inner(handle,display_name,avatar_hue),likes(count)&order=updated_at.desc&limit=30");
+    if(r.ok){
+      CLOUD.feed = (await r.json()).map(row => {
+        if(!getMovie(row.movie_id)) LIVE[row.movie_id] = rowToMovie(row);
+        return {cloud:true, movie:row.movie_id, score:Number(row.score), time:relTime(row.updated_at),
+          note:row.note || "", likes:(row.likes && row.likes[0] ? row.likes[0].count : 0),
+          userId:row.user_id, handle:row.profiles.handle,
+          who:{name:row.profiles.display_name, hue:row.profiles.avatar_hue}};
+      });
+    }
+  }catch(e){}
+  if(cur === "feed") renderFeed();
+}
+
 const BACKEND = {
-  enabled: false,
-  searchPeople(q, cb){ cb(null); },   // -> [{id, handle, name, hue, ranked}] | null
-  follow(id, cb){ cb(false); },
-  unfollow(id, cb){ cb(false); },
-  mates(cb){ cb([]); },
-  feed(cb){ cb([]); },
+  enabled: !!SUPA_URL,
+  searchPeople(q, cb){
+    const safe = q.toLowerCase().replace(/[^a-z0-9_ ]/g, "");
+    if(!safe) return cb([]);
+    sb("/rest/v1/profiles?select=id,handle,display_name,avatar_hue,rankings!rankings_user_id_fkey(count)" +
+       "&or=(handle.ilike.*" + safe + "*,display_name.ilike.*" + safe + "*)&limit=12")
+      .then(r => r.ok ? r.json() : null)
+      .then(rows => cb(rows === null ? null : rows
+        .filter(p => p.id !== myId())
+        .map(p => ({id:p.id, handle:p.handle, name:p.display_name, hue:p.avatar_hue,
+          ranked:(p.rankings && p.rankings[0] ? p.rankings[0].count : 0),
+          following: CLOUD.follows.has(p.id)}))))
+      .catch(() => cb(null));
+  },
+  follow(id, cb){
+    if(!authed()){ toast("Sign in to add Reelmates"); openAuthSheet("signup"); return cb(false); }
+    sb("/rest/v1/follows", {method:"POST", body: JSON.stringify({follower:myId(), followee:id})})
+      .then(r => { if(r.ok || r.status === 409){ CLOUD.follows.add(id); refreshCloudFeed(); cb(true); } else cb(false); })
+      .catch(() => cb(false));
+  },
+  unfollow(id, cb){
+    sb("/rest/v1/follows?follower=eq." + myId() + "&followee=eq." + id, {method:"DELETE"})
+      .then(r => { if(r.ok){ CLOUD.follows.delete(id); refreshCloudFeed(); cb(true); } else cb(false); })
+      .catch(() => cb(false));
+  },
 };
+
+async function toggleCloudLike(userId, movieId, btn){
+  if(!authed()){ toast("Sign in to like rankings"); openAuthSheet("login"); return; }
+  const key = userId + "|" + movieId;
+  const liked = CLOUD.myLikes.has(key);
+  if(liked){
+    CLOUD.myLikes.delete(key);
+    await sb("/rest/v1/likes?user_id=eq." + myId() + "&ranking_user=eq." + userId +
+      "&ranking_movie=eq." + encodeURIComponent(movieId), {method:"DELETE"});
+  } else {
+    CLOUD.myLikes.add(key);
+    await sb("/rest/v1/likes", {method:"POST",
+      body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
+  }
+  refreshCloudFeed();
+}
+
+/* ---- auth UI ---- */
+function openAuthSheet(mode){
+  const signup = mode === "signup";
+  openSheet(`
+    <h1 class="h1">${signup ? "Create your account" : "Welcome back"}</h1>
+    <p class="sub">${signup ? "Your list syncs to the cloud and friends can find you." : "Log in to your Reeli account."}</p>
+    <div style="display:grid;gap:10px">
+      <input class="field" id="auemail" type="email" placeholder="Email" autocomplete="email">
+      <input class="field" id="aupass" type="password" placeholder="Password (8+ characters)" autocomplete="${signup?"new-password":"current-password"}">
+      <div id="auerr" style="color:var(--bad);font-size:12.5px;display:none"></div>
+      <div style="display:flex;gap:9px;flex-wrap:wrap">
+        <button class="pillbtn acc" id="ausubmit" style="padding:11px 20px">${signup ? "Sign up" : "Log in"}</button>
+        <button class="pillbtn" id="auswap">${signup ? "I have an account" : "I need an account"}</button>
+      </div>
+    </div>`);
+  $("#auswap").addEventListener("click", () => openAuthSheet(signup ? "login" : "signup"));
+  const err = msg => { const e = $("#auerr"); e.textContent = msg; e.style.display = "block"; };
+  $("#ausubmit").addEventListener("click", async () => {
+    const email = $("#auemail").value.trim(), pass = $("#aupass").value;
+    if(!/.+@.+\..+/.test(email)) return err("That email doesn't look right.");
+    if(pass.length < 8) return err("Password needs at least 8 characters.");
+    $("#ausubmit").textContent = "…";
+    try{
+      const path = signup ? "/auth/v1/signup" : "/auth/v1/token?grant_type=password";
+      const r = await fetch(SUPA_URL + path, {method:"POST",
+        headers:{apikey:SUPA_KEY, "Content-Type":"application/json"},
+        body: JSON.stringify({email, password: pass})});
+      const d = await r.json();
+      if(!r.ok) return err(d.msg || d.error_description || d.message || "Something went wrong — try again.");
+      if(signup && !d.access_token){
+        openSheet(`<div class="result"><h2>Check your inbox 📬</h2>
+          <p>We sent a confirmation link to <b>${esc(email)}</b>.<br>Click it, then come back and log in.</p>
+          <button class="pillbtn acc" id="audone">Log in</button></div>`);
+        $("#audone").addEventListener("click", () => openAuthSheet("login"));
+        return;
+      }
+      saveAuth({access_token:d.access_token, refresh_token:d.refresh_token,
+        expires_at: Math.floor(Date.now()/1000) + (d.expires_in || 3600), user:d.user});
+      closeSheet();
+      await pullCloud();
+      if(!CLOUD.profile) openClaimHandle();
+      else { toast("Welcome back, " + CLOUD.profile.display_name + " 🎬"); render(cur); }
+    }catch(e){ err("Network hiccup — try again."); }
+    finally{ const b = $("#ausubmit"); if(b) b.textContent = signup ? "Sign up" : "Log in"; }
+  });
+}
+function openClaimHandle(){
+  const P = S.profile || {name:"", hue:172};
+  openSheet(`
+    <h1 class="h1">Claim your handle</h1>
+    <p class="sub">This is how Reelmates find you. Letters, numbers and _ only.</p>
+    <div style="display:grid;gap:10px">
+      <input class="field" id="chname" placeholder="Display name" maxlength="40" value="${esc(P.name === "Guest" ? "" : P.name)}">
+      <input class="field" id="chhandle" placeholder="@handle" maxlength="20">
+      <div class="swatches">${AVATAR_HUES.map(h => `<button class="swatch ${P.hue===h?"cur":""}" data-chue="${h}" style="background:hsl(${h} 45% 45%)" aria-label="Avatar color"></button>`).join("")}</div>
+      <div id="cherr" style="color:var(--bad);font-size:12.5px;display:none"></div>
+      <button class="pillbtn acc" id="chsave" style="padding:11px 20px">Finish</button>
+    </div>`);
+  let hue = P.hue;
+  sheet.querySelectorAll("[data-chue]").forEach(b => b.addEventListener("click", () => {
+    hue = +b.dataset.chue;
+    sheet.querySelectorAll(".swatch").forEach(s => s.classList.toggle("cur", +s.dataset.chue === hue));
+  }));
+  $("#chsave").addEventListener("click", async () => {
+    const name = $("#chname").value.trim();
+    const handle = $("#chhandle").value.trim().replace(/^@+/,"").toLowerCase();
+    const err = msg => { const e = $("#cherr"); e.textContent = msg; e.style.display = "block"; };
+    if(!name) return err("Pick a display name.");
+    if(!/^[a-z0-9_]{3,20}$/.test(handle)) return err("Handle: 3–20 chars, letters/numbers/_ only.");
+    const r = await sb("/rest/v1/profiles", {method:"POST",
+      body: JSON.stringify({id:myId(), handle, display_name:name, avatar_hue:hue, taste:S.taste})});
+    if(r.status === 409) return err("That handle is taken — try another.");
+    if(!r.ok) return err("Couldn't save — try again.");
+    CLOUD.profile = {id:myId(), handle, display_name:name, avatar_hue:hue};
+    S.profile = {name, handle:"@"+handle, hue};
+    save(); closeSheet(); render(cur);
+    toast(`Welcome to Reeli, ${name} 🎬`);
+    queueSync();
+  });
+}
+async function doLogout(){
+  try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){}
+  saveAuth(null);
+  CLOUD.profile = null; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set();
+  S.profile = null; save(); render(cur); toast("Logged out");
+}
 function feedItemHTML(f, idx){
   const m = getMovie(f.movie); if(!m) return "";
   const who = f.who || {name:"You", hue:(S.profile ? S.profile.hue : 172)};
-  const mine = !f.who;
-  const likeKey = "me"+idx;
-  const liked = !!S.likes[likeKey];
-  const likeN = (f.likes||0) + (liked?1:0);
+  const mine = !f.cloud;
+  let liked, likeN, likeAttr;
+  if(f.cloud){
+    liked = CLOUD.myLikes.has(f.userId + "|" + f.movie);
+    likeN = f.likes || 0;
+    likeAttr = `data-clike="${esc(f.userId)}|${esc(f.movie)}"`;
+  } else {
+    const likeKey = "me"+idx;
+    liked = !!S.likes[likeKey];
+    likeN = (f.likes||0) + (liked?1:0);
+    likeAttr = `data-like="${likeKey}"`;
+  }
+  const sub = mine
+    ? `${esc(f.time)}${f.rank ? ` · #${f.rank} on your list` : ""}`
+    : `${esc(f.time)} · @${esc(f.handle || "")}`;
   return `<article class="fitem">
     <div class="fhead">
-      <div class="avatar" style="background:hsl(${who.hue} 45% 45%)">${esc(who.name[0])}</div>
-      <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${esc(f.time)} · #${f.rank ? f.rank : "—"} on ${mine ? "your" : "their"} list</span></div>
+      <div class="avatar" style="background:hsl(${who.hue} 45% 45%)">${esc((who.name[0]||"?").toUpperCase())}</div>
+      <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${sub}</span></div>
       ${scoreHTML(f.score)}
     </div>
     <button class="fbody" data-open="${m.id}" style="width:100%;text-align:left;border:none">
@@ -789,7 +1091,7 @@ function feedItemHTML(f, idx){
     </button>
     ${f.note ? `<p class="fnote">“${esc(f.note)}”</p>` : ""}
     <div class="facts">
-      <button data-like="${likeKey}" class="${liked?"liked":""}" aria-pressed="${liked}">
+      <button ${likeAttr} class="${liked?"liked":""}" aria-pressed="${liked}">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
         ${likeN}</button>
       <button data-open="${m.id}">${isRanked(m.id) ? "Ranked ✓" : "Rank it too"}</button>
@@ -804,8 +1106,10 @@ function renderFeed(){
   </div>`;
   let body;
   if(feedTab === "activity"){
+    const cloudHTML = CLOUD.feed.map(f => feedItemHTML(f, 0)).join("");
     const mine = S.myFeed.map((f,i) => feedItemHTML(f, i)).join("");
-    body = mine ? `<div class="fgrid">${mine}</div>` :
+    const all = mine + cloudHTML;
+    body = all ? `<div class="fgrid">${all}</div>` :
       `<div class="empty"><div class="big" aria-hidden="true">🎞️</div>
         <p>Your feed starts with you. Rank a movie and it lands here — and once you add Reelmates, their rankings join the stream.</p>
         <button class="pillbtn acc" data-gosearch>Rank your first movie</button></div>`;
@@ -816,7 +1120,7 @@ function renderFeed(){
     if(!BACKEND.enabled){
       results = `<div class="empty" style="padding:30px 24px"><div class="big" aria-hidden="true">🎟️</div>
         <p><b>Reelmates are real people — no bots, no demo accounts.</b><br>
-        Account sign-up is switching on shortly. Meanwhile, send the site to a friend so there's someone to find:</p>
+        Send the site to a friend so there's someone to find:</p>
         <button class="pillbtn acc" id="inviteBtn">Copy invite link</button></div>`;
     } else if(mateState === "loading"){
       results = `<div class="empty" style="padding:24px"><p>Searching people…</p></div>`;
@@ -829,7 +1133,8 @@ function renderFeed(){
         </div>`).join("")}</div>`
         : `<div class="empty" style="padding:24px"><p>Nobody matching “${esc(mateQuery)}” yet. Handles are exact — ask your friend for theirs.</p></div>`;
     } else {
-      results = `<div class="empty" style="padding:24px"><p>Search by name or @handle to find people.</p></div>`;
+      results = `<div class="empty" style="padding:24px"><p>Search by name or @handle to find people.${authed() ? "" : "<br>You can browse without an account — following needs one."}</p>
+        <button class="pillbtn soft" id="inviteBtn" style="margin-top:10px">Copy invite link</button></div>`;
     }
     body = `<h1 class="h1">Reelmates</h1>
       <p class="sub">Your people in the audience. Find them by name or @handle and follow their rankings.</p>
@@ -1044,16 +1349,19 @@ function renderProfile(){
   const n = ids.length || 1;
   const dist = [["Loved", S.loved.length, "var(--good)"],["Fine", S.fine.length, "var(--mid)"],["Not for me", S.disliked.length, "var(--bad)"]];
   const P = S.profile || {name:"Guest", handle:"@guest", hue:172};
-  const guest = !S.profile;
+  const cloud = authed() && CLOUD.profile;
   $("#profileWrap").innerHTML = `
     <div class="phead">
       <div class="avatar" style="background:hsl(${P.hue} 45% 38%)">${esc((P.name[0]||"?").toUpperCase())}</div>
       <div style="flex:1;min-width:0"><div class="pname">${esc(P.name)}</div>
-        <div class="phandle">${esc(P.handle)}${guest ? " · guest mode" : ""}</div></div>
-      <button class="pillbtn ${guest?"acc":""}" id="editBtn">${guest ? "Set up profile" : "Edit"}</button>
+        <div class="phandle">${esc(P.handle)}${cloud ? ` · ${esc(AUTH.user && AUTH.user.email || "")}` : " · guest mode"}</div></div>
+      <button class="pillbtn" id="editBtn">Edit</button>
     </div>
-    ${guest ? `<div class="card" style="padding:12px 14px;margin-bottom:14px"><span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5">
-      You're in guest mode — everything saves to this browser. Cloud accounts (sync + Reelmates) are switching on shortly, and your list will carry over.</span></div>` : ""}
+    ${cloud ? "" : `<div class="card" style="padding:14px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5;flex:1;min-width:200px">
+      You're in guest mode — everything saves to this browser only. Create a free account to sync your list and follow Reelmates.</span>
+      <button class="pillbtn acc" id="signupBtn">Create account</button>
+      <button class="pillbtn" id="loginBtn">Log in</button></div>`}
     <div class="stats" style="grid-template-columns:repeat(4,1fr)">
       <div class="stat"><div class="n">${ids.length}</div><div class="l">Ranked</div></div>
       <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
@@ -1082,12 +1390,14 @@ function renderProfile(){
       ${ids.length ? `<button class="pillbtn soft" id="shareBtn">Share my top 5</button>` : ""}
       <button class="pillbtn" id="exportBtn">Back up data</button>
       <button class="pillbtn" id="importBtn">Restore backup</button>
-      <button class="pillbtn" id="logoutBtn">Log out</button>
+      ${authed() ? `<button class="pillbtn" id="logoutBtn">Log out</button>` : ""}
     </div>
     <button class="danger" id="resetBtn">Reset all my data</button>`;
   $("#editBtn").addEventListener("click", () => openAccountForm());
   $("#tasteBtn").addEventListener("click", () => { O = null; openOnboarding(1); });
-  $("#logoutBtn").addEventListener("click", () => { S.profile = null; save(); renderProfile(); toast("Back to guest mode"); });
+  const lo = $("#logoutBtn"); if(lo) lo.addEventListener("click", doLogout);
+  const su = $("#signupBtn"); if(su) su.addEventListener("click", () => openAuthSheet("signup"));
+  const li = $("#loginBtn"); if(li) li.addEventListener("click", () => openAuthSheet("login"));
   $("#exportBtn").addEventListener("click", () => {
     const text = JSON.stringify({reeli:1, app:S, posters:POSTERS.cache});
     if(navigator.clipboard && navigator.clipboard.writeText){
@@ -1237,11 +1547,19 @@ function openAccountForm(){
     sheet.querySelectorAll(".swatch").forEach(s => s.classList.toggle("cur", +s.dataset.ehue === hue));
   }));
   $("#ecancel").addEventListener("click", closeSheet);
-  $("#esave").addEventListener("click", () => {
+  $("#esave").addEventListener("click", async () => {
     const name = $("#ename").value.trim() || P.name;
     if(!name){ $("#ename").focus(); $("#ename").placeholder = "Name — required"; return; }
-    let handle = $("#ehandle").value.trim().replace(/^@+/,"") || P.handle.slice(1) ||
-      name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14) || "cinephile";
+    let handle = ($("#ehandle").value.trim().replace(/^@+/,"") || P.handle.slice(1) ||
+      name.toLowerCase().replace(/[^a-z0-9]/g,"").slice(0,14) || "cinephile").toLowerCase();
+    if(authed() && CLOUD.profile){
+      if(!/^[a-z0-9_]{3,20}$/.test(handle)){ toast("Handle: 3–20 chars, letters/numbers/_"); return; }
+      const r = await sb("/rest/v1/profiles?id=eq." + myId(), {method:"PATCH",
+        body: JSON.stringify({display_name:name, handle, avatar_hue:hue})});
+      if(r.status === 409){ toast("That handle is taken"); return; }
+      if(!r.ok){ toast("Couldn't save to the cloud — try again"); return; }
+      CLOUD.profile.display_name = name; CLOUD.profile.handle = handle; CLOUD.profile.avatar_hue = hue;
+    }
     S.profile = {...P, name, handle:"@"+handle, hue};
     save(); closeSheet(); renderProfile(); toast(isNew ? `Welcome, ${name} 🎬` : "Profile updated");
   });
@@ -1262,6 +1580,10 @@ function wireCommon(root){
     const k = b.dataset.like;
     S.likes[k] = !S.likes[k]; if(!S.likes[k]) delete S.likes[k];
     save(); renderFeed();
+  }));
+  root.querySelectorAll("[data-clike]").forEach(b => b.addEventListener("click", () => {
+    const [u, mv] = b.dataset.clike.split("|");
+    toggleCloudLike(u, mv, b);
   }));
   root.querySelectorAll("[data-gosearch]").forEach(b => b.addEventListener("click", () => nav("search")));
 }
@@ -1399,6 +1721,7 @@ function stepCompare(){
 }
 function placeAt(idx){
   ensureSaved(R.id);
+  SYNC_TOUCH = R.id;
   S[R.bucket].splice(idx, 0, R.id);
   S.watch = S.watch.filter(x => x !== R.id);
   const m = getMovie(R.id), sc = scoreOf(R.id), rk = rankOf(R.id);
@@ -1470,4 +1793,5 @@ S.watch = S.watch.filter(id => getMovie(id));
 updateBadge();
 nav("feed");
 if(!S.onboarded) openOnboarding(0);
+if(authed()) pullCloud().then(() => { if(!CLOUD.profile && authed()) openClaimHandle(); else render(cur); });
 </script>

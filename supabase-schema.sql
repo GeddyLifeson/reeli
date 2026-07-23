@@ -1,4 +1,4 @@
--- Reeli database schema (Supabase / Postgres)
+﻿-- Reeli database schema (Supabase / Postgres)
 -- Paste this whole file into: Supabase dashboard -> SQL Editor -> Run.
 -- Safe to run once on a fresh project.
 
@@ -15,9 +15,9 @@ alter table public.profiles enable row level security;
 create policy "profiles readable by everyone"
   on public.profiles for select using (true);
 create policy "users insert own profile"
-  on public.profiles for insert with check (auth.uid() = id);
+  on public.profiles for insert with check ((select auth.uid()) = id);
 create policy "users update own profile"
-  on public.profiles for update using (auth.uid() = id);
+  on public.profiles for update using ((select auth.uid()) = id);
 
 -- case-insensitive people search by handle or name
 create index profiles_handle_idx on public.profiles (lower(handle));
@@ -41,11 +41,11 @@ alter table public.rankings enable row level security;
 create policy "rankings readable by everyone"
   on public.rankings for select using (true);
 create policy "users insert own rankings"
-  on public.rankings for insert with check (auth.uid() = user_id);
+  on public.rankings for insert with check ((select auth.uid()) = user_id);
 create policy "users update own rankings"
-  on public.rankings for update using (auth.uid() = user_id);
+  on public.rankings for update using ((select auth.uid()) = user_id);
 create policy "users delete own rankings"
-  on public.rankings for delete using (auth.uid() = user_id);
+  on public.rankings for delete using ((select auth.uid()) = user_id);
 
 create index rankings_feed_idx on public.rankings (user_id, updated_at desc);
 
@@ -60,11 +60,11 @@ create table public.watchlist (
 );
 alter table public.watchlist enable row level security;
 create policy "watchlist readable by owner"
-  on public.watchlist for select using (auth.uid() = user_id);
+  on public.watchlist for select using ((select auth.uid()) = user_id);
 create policy "users insert own watchlist"
-  on public.watchlist for insert with check (auth.uid() = user_id);
+  on public.watchlist for insert with check ((select auth.uid()) = user_id);
 create policy "users delete own watchlist"
-  on public.watchlist for delete using (auth.uid() = user_id);
+  on public.watchlist for delete using ((select auth.uid()) = user_id);
 
 -- ============ follows: reelmates ============
 create table public.follows (
@@ -78,9 +78,9 @@ alter table public.follows enable row level security;
 create policy "follows readable by everyone"
   on public.follows for select using (true);
 create policy "users follow as themselves"
-  on public.follows for insert with check (auth.uid() = follower);
+  on public.follows for insert with check ((select auth.uid()) = follower);
 create policy "users unfollow as themselves"
-  on public.follows for delete using (auth.uid() = follower);
+  on public.follows for delete using ((select auth.uid()) = follower);
 
 -- ============ likes on feed items ============
 create table public.likes (
@@ -96,6 +96,6 @@ alter table public.likes enable row level security;
 create policy "likes readable by everyone"
   on public.likes for select using (true);
 create policy "users like as themselves"
-  on public.likes for insert with check (auth.uid() = user_id);
+  on public.likes for insert with check ((select auth.uid()) = user_id);
 create policy "users unlike as themselves"
-  on public.likes for delete using (auth.uid() = user_id);
+  on public.likes for delete using ((select auth.uid()) = user_id);
