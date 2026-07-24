@@ -408,7 +408,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-20"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-21"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -1047,51 +1047,61 @@ const BACKEND = {
   },
 };
 
-/* ---- notifications: who liked your rankings / hot takes ---- */
+/* ---- notifications: likes on your rankings + new Reelmates ---- */
 function setNotifBadge(n){
   const btn = $("#notifBtn"), b = $("#notifBadge");
   if(!btn || !b) return;
   btn.style.display = authed() ? "flex" : "none";
   b.textContent = n > 0 ? (n > 9 ? "9+" : String(n)) : "";
 }
+function profFields(p){ return {
+  who: p ? p.display_name : "Someone",
+  hue: p ? p.avatar_hue : 172,
+  url: p ? p.avatar_url : null,
+}; }
 async function refreshNotifs(){
   if(!authed()){ CLOUD.notifs = []; setNotifBadge(0); return; }
   try{
-    const r = await sb("/rest/v1/likes?ranking_user=eq." + myId() + "&user_id=neq." + myId() +
-      "&select=user_id,ranking_movie,created_at,profiles!likes_user_id_fkey(" + PSEL + ")" +
-      "&order=created_at.desc&limit=40");
-    if(!r.ok) return;
-    CLOUD.notifs = (await r.json()).map(x => ({
-      liker: x.profiles ? x.profiles.display_name : "Someone",
-      handle: x.profiles ? x.profiles.handle : "",
-      hue: x.profiles ? x.profiles.avatar_hue : 172,
-      url: x.profiles ? x.profiles.avatar_url : null,
-      movie: x.ranking_movie, ts: x.created_at,
-    }));
-    const unread = CLOUD.notifs.filter(n => n.ts > (S.notifSeen || "")).length;
-    setNotifBadge(unread);
+    const [likesR, followsR] = await Promise.all([
+      sb("/rest/v1/likes?ranking_user=eq." + myId() + "&user_id=neq." + myId() +
+        "&select=user_id,ranking_movie,created_at,profiles!likes_user_id_fkey(" + PSEL + ")&order=created_at.desc&limit=40"),
+      sb("/rest/v1/follows?followee=eq." + myId() +
+        "&select=follower,created_at,profiles!follows_follower_fkey(" + PSEL + ")&order=created_at.desc&limit=40"),
+    ]);
+    const notifs = [];
+    if(likesR.ok) (await likesR.json()).forEach(x =>
+      notifs.push({type:"like", userId:x.user_id, movie:x.ranking_movie, ts:x.created_at, ...profFields(x.profiles)}));
+    if(followsR.ok) (await followsR.json()).forEach(x =>
+      notifs.push({type:"follow", userId:x.follower, ts:x.created_at, ...profFields(x.profiles)}));
+    notifs.sort((a,b) => (a.ts < b.ts ? 1 : -1));
+    CLOUD.notifs = notifs.slice(0, 50);
+    setNotifBadge(CLOUD.notifs.filter(n => n.ts > (S.notifSeen || "")).length);
   }catch(e){}
 }
 function openNotifications(){
   const list = CLOUD.notifs || [];
+  const heart = `<svg width="14" height="14" viewBox="0 0 24 24" fill="var(--bad)" stroke="var(--bad)" stroke-width="2"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>`;
+  const seat = `<span style="font-size:15px">🎟️</span>`;
   const body = list.length
     ? `<div class="card">${list.map(n => {
-        const m = getMovie(n.movie);
-        const title = m ? m.title : "your ranking";
         const fresh = n.ts > (S.notifSeen || "");
-        return `<button class="row" data-notif="${esc(n.movie)}" style="${fresh ? "background:var(--accent-soft)" : ""}">
-          ${avatarHTML(n.liker, n.hue, n.url, "width:34px;height:34px;font-size:13px")}
-          <span class="meta"><span class="t" style="font-weight:600;font-size:13.5px;white-space:normal">
-            <b>${esc(n.liker)}</b> liked your take on <b>${esc(title)}</b></span>
-          <span class="d">${esc(relTime(n.ts))}</span></span>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--bad)" stroke="var(--bad)" stroke-width="2"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
-        </button>`;
+        const bg = fresh ? "background:var(--accent-soft)" : "";
+        const av = avatarHTML(n.who, n.hue, n.url, "width:34px;height:34px;font-size:13px");
+        if(n.type === "follow"){
+          return `<button class="row" data-notifperson="${esc(n.userId)}" style="${bg}">${av}
+            <span class="meta"><span class="t" style="font-weight:600;font-size:13.5px;white-space:normal"><b>${esc(n.who)}</b> added you as a Reelmate</span>
+            <span class="d">${esc(relTime(n.ts))}</span></span>${seat}</button>`;
+        }
+        const m = getMovie(n.movie), title = m ? m.title : "your ranking";
+        return `<button class="row" data-notif="${esc(n.movie)}" style="${bg}">${av}
+          <span class="meta"><span class="t" style="font-weight:600;font-size:13.5px;white-space:normal"><b>${esc(n.who)}</b> liked your take on <b>${esc(title)}</b></span>
+          <span class="d">${esc(relTime(n.ts))}</span></span>${heart}</button>`;
       }).join("")}</div>`
     : `<div class="empty" style="padding:36px 20px"><div class="big" aria-hidden="true">🔔</div>
-        <p>No notifications yet. When someone likes one of your rankings or hot takes, it shows up here.</p></div>`;
+        <p>No notifications yet. When someone likes your ranking or adds you as a Reelmate, it shows up here.</p></div>`;
   openSheet(`<h1 class="h1">Notifications</h1>${body}`);
   sheet.querySelectorAll("[data-notif]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.notif)));
-  // opening marks everything read
+  sheet.querySelectorAll("[data-notifperson]").forEach(b => b.addEventListener("click", () => openPerson(b.dataset.notifperson)));
   if(list.length){ S.notifSeen = list[0].ts; save(); }
   setNotifBadge(0);
 }
