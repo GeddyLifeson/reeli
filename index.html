@@ -1,6 +1,10 @@
 <meta charset="utf-8">
 <title>Reeli — rank every movie you've seen</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#0E6B5C">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root{
     --bg:#EFF1EE; --frame:#E4E8E3; --surface:#FFFFFF; --surface2:#F4F6F3;
@@ -472,6 +476,7 @@ function seed(){
     watch:[],
     custom:[],
     likes:{},
+    notes:{},
     myFeed:[],
   };
 }
@@ -485,6 +490,7 @@ function load(){
         if(!("onboarded" in s)) s.onboarded = true; // returning visitor: don't re-onboard
         if(!("taste" in s)) s.taste = null;
         if(!("guestChosen" in s)) s.guestChosen = false;
+        if(!s.notes) s.notes = {};
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
         // untouched, clear them so real users start with their own list
         if(s.loved.join() === "parasite,whiplash,spiderverse,madmax" &&
@@ -829,7 +835,8 @@ function movieToRow(id, bucket, pos){
     year: typeof m.year === "number" ? m.year : null,
     genre: m.genre || null, director: m.dir || null,
     poster: m.poster || (c ? c.u : null),
-    bucket, position: pos, score: scoreOf(id)};
+    bucket, position: pos, score: scoreOf(id),
+    note: S.notes[id] || null};
 }
 
 /* ---- cloud sync: debounced full reconcile of rankings + watchlist ---- */
@@ -903,6 +910,7 @@ async function pullCloud(){
         rows.sort((a,b) => a.position - b.position).forEach(r => {
           if(!getMovie(r.movie_id)){ const m = rowToMovie(r); S.custom.push(m); }
           if(S[r.bucket]) S[r.bucket].push(r.movie_id);
+          if(r.note) S.notes[r.movie_id] = r.note;
         });
         for(const b of ["loved","fine","disliked"]) S[b] = S[b].concat(localOnly[b]);
       }
@@ -985,6 +993,34 @@ async function toggleCloudLike(userId, movieId, btn){
   refreshCloudFeed();
 }
 
+/* ---- community scores on a movie: everyone's average + your Reelmates' takes ---- */
+async function loadCommunityScores(movieId){
+  try{
+    const r = await sb("/rest/v1/rankings?movie_id=eq." + encodeURIComponent(movieId) +
+      "&select=score,note,user_id,profiles!rankings_user_id_fkey(handle,display_name,avatar_hue)&limit=60");
+    if(!r.ok) return;
+    const rows = (await r.json()).filter(x => x.user_id !== myId());
+    const wrap = document.getElementById("commWrap");
+    if(!wrap || detailId !== movieId || !rows.length) return;
+    const avg = rows.reduce((a, x) => a + Number(x.score), 0) / rows.length;
+    const mates = rows.filter(x => CLOUD.follows.has(x.user_id));
+    wrap.innerHTML = `
+      <div class="sechead">On Reeli</div>
+      <div class="card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
+        ${scoreHTML(Math.round(avg*10)/10)}
+        <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.45">Community average from ${rows.length} ranking${rows.length===1?"":"s"}</span>
+      </div>
+      ${mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
+        <button class="row" data-cperson="${esc(x.user_id)}">
+          <div class="avatar" style="width:30px;height:30px;font-size:12px;background:hsl(${x.profiles.avatar_hue} 45% 45%)">${esc((x.profiles.display_name[0]||"?").toUpperCase())}</div>
+          <span class="meta"><span class="t" style="font-size:13px">${esc(x.profiles.display_name)}</span>
+          ${x.note ? `<span class="d" style="white-space:normal">“${esc(x.note)}”</span>` : ""}</span>
+          ${scoreHTML(Number(x.score))}
+        </button>`).join("")}</div>` : ""}`;
+    wrap.querySelectorAll("[data-cperson]").forEach(b => b.addEventListener("click", () => openPerson(b.dataset.cperson)));
+  }catch(e){}
+}
+
 /* ---- public profile sheet: tap any person to see their list ---- */
 async function openPerson(id){
   openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
@@ -994,7 +1030,11 @@ async function openPerson(id){
   const rr = await sb("/rest/v1/rankings?user_id=eq." + encodeURIComponent(id) + "&select=*&order=score.desc&limit=50");
   const rows = rr.ok ? await rr.json() : [];
   rows.forEach(r => { if(!getMovie(r.movie_id)) LIVE[r.movie_id] = rowToMovie(r); });
-  const both = rows.filter(r => isRanked(r.movie_id)).slice(0, 6);
+  const overlap = rows.filter(r => isRanked(r.movie_id));
+  const both = overlap.slice(0, 6);
+  const match = overlap.length
+    ? Math.min(99, Math.max(35, Math.round(97 - (overlap.reduce((a, r) => a + Math.abs(Number(r.score) - scoreOf(r.movie_id)), 0) / overlap.length) * 9)))
+    : null;
   const following = CLOUD.follows.has(id);
   const isMe = id === myId();
   openSheet(`
@@ -1004,8 +1044,12 @@ async function openPerson(id){
         <h2>${esc(p.display_name)}</h2>
         <div class="d">@${esc(p.handle)} · ${rows.length} movie${rows.length===1?"":"s"} ranked</div>
         ${p.taste && p.taste.genres && p.taste.genres.length ? `<div class="chips" style="margin-top:8px">${p.taste.genres.slice(0,4).map(g => `<span class="chip" style="padding:4px 9px;font-size:11px">${esc(g)}</span>`).join("")}</div>` : ""}
-        ${isMe ? "" : `<div class="dactions"><button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button></div>`}
+        <div class="dactions">
+          ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+          <button class="pillbtn" id="pshare">Share</button>
+        </div>
       </div>
+      ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared movie${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
     </div>
     ${both.length ? `<div class="sechead">You both ranked</div><div class="card" style="padding:6px 14px">
       ${both.map(r => `<div class="bothrow"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</span>
@@ -1020,6 +1064,12 @@ async function openPerson(id){
   const pf = $("#pfollow");
   if(pf) pf.addEventListener("click", () => {
     (following ? BACKEND.unfollow : BACKEND.follow)(id, ok => { if(ok) openPerson(id); });
+  });
+  $("#pshare").addEventListener("click", () => {
+    const link = location.origin + location.pathname + "?u=" + encodeURIComponent(p.handle);
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(link).then(() => toast("Profile link copied 🎟️"), () => toast(link));
+    else toast(link);
   });
   sheet.querySelectorAll("[data-open]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.open)));
   hydratePosters(sheet);
@@ -1217,7 +1267,7 @@ function feedItemHTML(f, idx){
     </div>
   </article>`;
 }
-let feedTab = "activity", mateQuery = "", mateResults = null, mateState = "idle", mateT = null;
+let feedTab = "activity", mateQuery = "", mateResults = null, mateState = "idle", mateT = null, mateSugg = null;
 function renderFeed(){
   const segs = `<div class="segs">
     <button class="seg ${feedTab==="activity"?"cur":""}" data-ftab="activity">Activity</button>
@@ -1235,6 +1285,13 @@ function renderFeed(){
     body = `<h1 class="h1">Fresh takes</h1>
       <p class="sub">Your rankings and your Reelmates' — as they happen.</p>${segs}${body}`;
   } else {
+    const personRow = p => `<div class="row">
+        <div class="avatar" style="background:hsl(${p.hue} 45% 45%)">${esc((p.name[0]||"?").toUpperCase())}</div>
+        <button class="meta" data-person="${esc(p.id)}" style="text-align:left;min-width:0">
+        <span class="t">${esc(p.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">@${esc(p.handle)}</span></span>
+        <span class="d">${p.ranked} movie${p.ranked===1?"":"s"} ranked · tap for profile</span></button>
+        <button class="pillbtn ${p.following?"soft":"acc"}" data-pfollow="${esc(p.id)}">${p.following ? "Reelmates ✓" : "Add"}</button>
+      </div>`;
     let results;
     if(!BACKEND.enabled){
       results = `<div class="empty" style="padding:30px 24px"><div class="big" aria-hidden="true">🎟️</div>
@@ -1244,16 +1301,24 @@ function renderFeed(){
     } else if(mateState === "loading"){
       results = `<div class="empty" style="padding:24px"><p>Searching people…</p></div>`;
     } else if(Array.isArray(mateResults)){
-      results = mateResults.length ? `<div class="card">${mateResults.map(p => `<div class="row">
-          <div class="avatar" style="background:hsl(${p.hue} 45% 45%)">${esc((p.name[0]||"?").toUpperCase())}</div>
-          <button class="meta" data-person="${esc(p.id)}" style="text-align:left;min-width:0">
-          <span class="t">${esc(p.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">@${esc(p.handle)}</span></span>
-          <span class="d">${p.ranked} movies ranked · tap for profile</span></button>
-          <button class="pillbtn ${p.following?"soft":"acc"}" data-pfollow="${esc(p.id)}">${p.following ? "Reelmates ✓" : "Add"}</button>
-        </div>`).join("")}</div>`
+      results = mateResults.length ? `<div class="card">${mateResults.map(personRow).join("")}</div>`
         : `<div class="empty" style="padding:24px"><p>Nobody matching “${esc(mateQuery)}” yet. Handles are exact — ask your friend for theirs.</p></div>`;
     } else {
-      results = `<div class="empty" style="padding:24px"><p>Search by name or @handle to find people.${authed() ? "" : "<br>You can browse without an account — following needs one."}</p>
+      if(mateSugg === null){
+        mateSugg = "loading";
+        sb("/rest/v1/profiles?select=id,handle,display_name,avatar_hue,rankings!rankings_user_id_fkey(count)&order=created_at.desc&limit=8")
+          .then(r => r.ok ? r.json() : []).then(rows => {
+            mateSugg = rows.filter(p => p.id !== myId()).map(p => ({id:p.id, handle:p.handle, name:p.display_name,
+              hue:p.avatar_hue, ranked:(p.rankings && p.rankings[0] ? p.rankings[0].count : 0),
+              following: CLOUD.follows.has(p.id)}));
+            if(cur === "feed" && feedTab === "mates" && !mateQuery.trim()) renderFeed();
+          }).catch(() => { mateSugg = []; });
+      }
+      const sugg = Array.isArray(mateSugg)
+        ? mateSugg.map(p => ({...p, following: CLOUD.follows.has(p.id)}))
+        : null;
+      results = `${sugg && sugg.length ? `<div class="sechead">New on Reeli</div><div class="card">${sugg.map(personRow).join("")}</div>` : ""}
+        <div class="empty" style="padding:24px"><p>Search by name or @handle to find people.${authed() ? "" : "<br>You can browse without an account — following needs one."}</p>
         <button class="pillbtn soft" id="inviteBtn" style="margin-top:10px">Copy invite link</button></div>`;
     }
     body = `<h1 class="h1">Reelmates</h1>
@@ -1507,6 +1572,7 @@ function renderProfile(){
         <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
         ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>` : ""}
     <div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
+      ${cloud ? `<button class="pillbtn soft" id="shareProfBtn">Share my profile</button>` : ""}
       ${ids.length ? `<button class="pillbtn soft" id="shareBtn">Share my top 5</button>` : ""}
       <button class="pillbtn" id="exportBtn">Back up data</button>
       <button class="pillbtn" id="importBtn">Restore backup</button>
@@ -1516,6 +1582,13 @@ function renderProfile(){
   $("#editBtn").addEventListener("click", () => openAccountForm());
   $("#tasteBtn").addEventListener("click", () => { O = null; openOnboarding(1); });
   const lo = $("#logoutBtn"); if(lo) lo.addEventListener("click", doLogout);
+  const sp = $("#shareProfBtn");
+  if(sp) sp.addEventListener("click", () => {
+    const link = location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle);
+    if(navigator.clipboard && navigator.clipboard.writeText)
+      navigator.clipboard.writeText(link).then(() => toast("Profile link copied — send it to anyone 🎟️"), () => toast(link));
+    else toast(link);
+  });
   const su = $("#signupBtn"); if(su) su.addEventListener("click", () => openAuthSheet("signup"));
   const li = $("#loginBtn"); if(li) li.addEventListener("click", () => openAuthSheet("login"));
   $("#exportBtn").addEventListener("click", () => {
@@ -1736,19 +1809,31 @@ function openDetail(id){
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
       : !m.enriched ? `<p class="sub" style="margin:0 0 14px;opacity:.6">Loading details…</p>` : ""}
+    ${ranked && S.notes[id] ? `<p class="fnote" style="margin:0 0 12px">“${esc(S.notes[id])}” — you</p>` : ""}
     <div class="dactions">
       ${ranked
         ? `<button class="pillbtn acc" data-a="rerate">Re-rank</button>
+           <button class="pillbtn" data-a="take">${S.notes[id] ? "✍ Edit take" : "✍ Hot take"}</button>
            <button class="pillbtn" data-a="unrank">Remove ranking</button>`
         : `<button class="pillbtn acc" data-a="rate">Rank it</button>
            <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
       <button class="pillbtn" data-a="close">Close</button>
-    </div>`);
+    </div>
+    <div id="commWrap"></div>`);
+  if(BACKEND.enabled) loadCommunityScores(id);
   sheet.querySelectorAll("[data-a]").forEach(b => b.addEventListener("click", () => {
     const a = b.dataset.a;
     if(a === "close") closeSheet();
     else if(a === "rate" || a === "rerate"){ startRate(id); }
-    else if(a === "unrank"){ removeRanking(id); save(); closeSheet(); render(cur); toast("Ranking removed"); }
+    else if(a === "take"){
+      const v = prompt("Your hot take (up to 280 characters):", S.notes[id] || "");
+      if(v === null) return;
+      const t = v.trim().slice(0, 280);
+      if(t) S.notes[id] = t; else delete S.notes[id];
+      const fe = S.myFeed.find(f => f.movie === id); if(fe) fe.note = t;
+      save(); openDetail(id); toast(t ? "Take saved ✍" : "Take removed");
+    }
+    else if(a === "unrank"){ removeRanking(id); delete S.notes[id]; save(); closeSheet(); render(cur); toast("Ranking removed"); }
     else if(a === "watch"){
       if(S.watch.includes(id)){ S.watch = S.watch.filter(x=>x!==id); } else { ensureSaved(id); S.watch.unshift(id); toast("Added to watchlist 🔖"); }
       save(); openDetail(id); render(cur);
@@ -1857,6 +1942,7 @@ function placeAt(idx){
       <h2>${esc(m.title)}</h2>
       ${scoreHTML(sc,"bigscore")}
       <p>Locked in at <b>#${rk}</b> of ${allRanked().length} on your list.<br>Scores shift as your ranking grows — that's the fun part.</p>
+      <input class="field" id="takeInp" placeholder="Add a hot take (optional) — your Reelmates will see it" maxlength="280" style="width:100%">
       <div style="display:flex;gap:9px;margin-top:6px">
         <button class="pillbtn acc" id="doneBtn">See my ranking</button>
         <button class="pillbtn" id="moreBtn">Rank another</button>
@@ -1864,10 +1950,20 @@ function placeAt(idx){
       </div>
     </div>`);
   const placedId = R.id;
-  $("#doneBtn").addEventListener("click", () => { closeSheet(); nav("ranks"); });
-  $("#moreBtn").addEventListener("click", () => { closeSheet(); nav("search"); });
+  const commitTake = () => {
+    const inp = $("#takeInp");
+    const v = inp ? inp.value.trim().slice(0, 280) : "";
+    if(v){
+      S.notes[placedId] = v;
+      if(S.myFeed[0] && S.myFeed[0].movie === placedId) S.myFeed[0].note = v;
+      save();
+    }
+  };
+  $("#doneBtn").addEventListener("click", () => { commitTake(); closeSheet(); nav("ranks"); });
+  $("#moreBtn").addEventListener("click", () => { commitTake(); closeSheet(); nav("search"); });
   $("#undoBtn").addEventListener("click", () => {
     removeRanking(placedId);
+    delete S.notes[placedId];
     if(S.myFeed.length && S.myFeed[0].movie === placedId) S.myFeed.shift();
     save(); closeSheet(); render(cur); toast("Ranking undone");
   });
@@ -1956,6 +2052,12 @@ window.addEventListener("hashchange", async () => {
     showGate();
   } else if(!S.onboarded){
     openOnboarding(0);
+  }
+  // shared profile links: reeli/?u=handle opens that person's profile
+  const shareU = new URLSearchParams(location.search).get("u");
+  if(shareU && BACKEND.enabled){
+    sb("/rest/v1/profiles?handle=eq." + encodeURIComponent(shareU.toLowerCase().replace(/^@+/, "")) + "&select=id")
+      .then(r => r.ok ? r.json() : []).then(rows => { if(rows[0]) openPerson(rows[0].id); }).catch(() => {});
   }
 })();
 </script>
