@@ -381,7 +381,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-8"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-9"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -1018,18 +1018,28 @@ async function toggleCloudLike(userId, movieId, btn){
 async function loadCommunityScores(movieId){
   try{
     const r = await sb("/rest/v1/rankings?movie_id=eq." + encodeURIComponent(movieId) +
-      "&select=score,note,user_id,profiles!rankings_user_id_fkey(handle,display_name,avatar_hue)&limit=60");
+      "&select=score,note,user_id,profiles!rankings_user_id_fkey(handle,display_name,avatar_hue)&limit=200");
     if(!r.ok) return;
-    const rows = (await r.json()).filter(x => x.user_id !== myId());
+    const all = await r.json();
+    const others = all.filter(x => x.user_id !== myId());
     const wrap = document.getElementById("commWrap");
-    if(!wrap || detailId !== movieId || !rows.length) return;
-    const avg = rows.reduce((a, x) => a + Number(x.score), 0) / rows.length;
-    const mates = rows.filter(x => CLOUD.follows.has(x.user_id));
+    // only worth showing when someone besides you has ranked it —
+    // but the average includes everyone (you too), so the math matches what you see
+    if(!wrap || detailId !== movieId || !others.length) return;
+    const mineIncluded = all.length > others.length;
+    const avg = all.reduce((a, x) => a + Number(x.score), 0) / all.length;
+    const bands = [
+      ["loved", all.filter(x => Number(x.score) >= 6.7).length],
+      ["fine", all.filter(x => Number(x.score) >= 3.4 && Number(x.score) < 6.7).length],
+      ["not for them", all.filter(x => Number(x.score) < 3.4).length],
+    ].filter(b => b[1] > 0).map(b => `${b[1]} ${b[0]}`).join(" · ");
+    const mates = others.filter(x => CLOUD.follows.has(x.user_id));
     wrap.innerHTML = `
       <div class="sechead">On Reeli</div>
       <div class="card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
         ${scoreHTML(Math.round(avg*10)/10)}
-        <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.45">Community average from ${rows.length} ranking${rows.length===1?"":"s"}</span>
+        <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.45">
+          Average of ${all.length} ranking${all.length===1?"":"s"}${mineIncluded ? " (including yours)" : ""}<br>${esc(bands)}</span>
       </div>
       ${mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
         <button class="row" data-cperson="${esc(x.user_id)}">
