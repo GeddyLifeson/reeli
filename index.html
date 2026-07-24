@@ -404,7 +404,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-14"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-15"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -1447,10 +1447,18 @@ function renderFeed(){
   }
   $("#feedWrap").querySelectorAll("[data-pfollow]").forEach(b => b.addEventListener("click", () => {
     const id = b.dataset.pfollow;
-    const p = (mateResults||[]).find(x => x.id === id); if(!p) return;
-    const done = ok => { if(!ok){ toast("Couldn't update — try again"); return; }
-      p.following = !p.following; toast(p.following ? `${p.name} is now a Reelmate 🎟️` : `Removed ${p.name}`); renderFeed(); };
-    p.following ? BACKEND.unfollow(id, done) : BACKEND.follow(id, done);
+    // person can come from either the search results or the "New on Reeli" suggestions
+    const pool = [...(mateResults || []), ...(Array.isArray(mateSugg) ? mateSugg : [])];
+    const p = pool.find(x => x.id === id);
+    const name = p ? p.name : "them";
+    const following = CLOUD.follows.has(id); // source of truth, not the list object
+    const done = ok => {
+      if(!ok){ toast("Couldn't update — try again"); return; }
+      if(p) p.following = !following;
+      toast(following ? `Removed ${name}` : `${name} is now a Reelmate 🎟️`);
+      renderFeed();
+    };
+    following ? BACKEND.unfollow(id, done) : BACKEND.follow(id, done);
   }));
   wireCommon($("#feedWrap"));
 }
