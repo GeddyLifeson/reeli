@@ -375,8 +375,12 @@
       </svg>
       <span class="wordmark">Reeli</span>
     </div>
-    <div style="display:flex;align-items:center;gap:12px">
+    <div style="display:flex;align-items:center;gap:10px">
       <span class="screen-tag" id="screenTag">Feed</span>
+      <button class="iconbtn" id="notifBtn" title="Notifications" aria-label="Notifications" style="position:relative;display:none">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>
+        <span class="badge" id="notifBadge" style="top:-3px;right:-3px;left:auto"></span>
+      </button>
       <button class="iconbtn" id="themeBtn" title="Theme: auto" aria-label="Cycle color theme" style="font-size:15px">◐</button>
     </div>
   </header>
@@ -404,7 +408,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-17"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-18"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -509,6 +513,7 @@ function seed(){
     notes:{},
     myFeed:[],
     feedSeen:"",
+    notifSeen:"",
     ui:{accent:null, wall:null, wallTitle:null},
   };
 }
@@ -525,6 +530,7 @@ function load(){
         if(!s.notes) s.notes = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
+        if(!("notifSeen" in s)) s.notifSeen = "";
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
         // untouched, clear them so real users start with their own list
         if(s.loved.join() === "parasite,whiplash,spiderverse,madmax" &&
@@ -803,7 +809,7 @@ function nav(to){
   document.querySelectorAll(".nav [data-nav]").forEach(b => b.classList.toggle("cur", b.dataset.nav === to));
   $("#screenTag").textContent = TAGS[to];
   render(to);
-  if(to === "feed" && authed()){ markFeedSeen(); refreshCloudFeed(); }
+  if(to === "feed" && authed()){ markFeedSeen(); refreshCloudFeed(); refreshNotifs(); }
   window.scrollTo({top:0});
 }
 document.querySelectorAll(".nav [data-nav]").forEach(b => b.addEventListener("click", () => nav(b.dataset.nav)));
@@ -826,7 +832,7 @@ fetch(SUPA_URL + "/rest/v1/profiles?select=avatar_url&limit=1",
   .then(r => { if(r.ok) PSEL += ",avatar_url"; }).catch(() => {});
 let AUTH = null;
 try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){}
-const CLOUD = { profile:null, follows:new Set(), feed:[], myLikes:new Set() };
+const CLOUD = { profile:null, follows:new Set(), feed:[], myLikes:new Set(), notifs:[] };
 function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){} }
 function authed(){ return !!(AUTH && AUTH.access_token); }
 function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
@@ -977,6 +983,7 @@ async function pullCloud(){
   PULLING = false;
   queueSync(); // reconcile any local-only data up to the cloud
   refreshCloudFeed();
+  refreshNotifs();
 }
 async function refreshCloudFeed(){
   if(!authed() || !CLOUD.follows.size){ CLOUD.feed = []; if(cur === "feed") renderFeed(); return; }
@@ -1037,6 +1044,55 @@ const BACKEND = {
       .catch(() => cb(false));
   },
 };
+
+/* ---- notifications: who liked your rankings / hot takes ---- */
+function setNotifBadge(n){
+  const btn = $("#notifBtn"), b = $("#notifBadge");
+  if(!btn || !b) return;
+  btn.style.display = authed() ? "flex" : "none";
+  b.textContent = n > 0 ? (n > 9 ? "9+" : String(n)) : "";
+}
+async function refreshNotifs(){
+  if(!authed()){ CLOUD.notifs = []; setNotifBadge(0); return; }
+  try{
+    const r = await sb("/rest/v1/likes?ranking_user=eq." + myId() + "&user_id=neq." + myId() +
+      "&select=user_id,ranking_movie,created_at,profiles!likes_user_id_fkey(" + PSEL + ")" +
+      "&order=created_at.desc&limit=40");
+    if(!r.ok) return;
+    CLOUD.notifs = (await r.json()).map(x => ({
+      liker: x.profiles ? x.profiles.display_name : "Someone",
+      handle: x.profiles ? x.profiles.handle : "",
+      hue: x.profiles ? x.profiles.avatar_hue : 172,
+      url: x.profiles ? x.profiles.avatar_url : null,
+      movie: x.ranking_movie, ts: x.created_at,
+    }));
+    const unread = CLOUD.notifs.filter(n => n.ts > (S.notifSeen || "")).length;
+    setNotifBadge(unread);
+  }catch(e){}
+}
+function openNotifications(){
+  const list = CLOUD.notifs || [];
+  const body = list.length
+    ? `<div class="card">${list.map(n => {
+        const m = getMovie(n.movie);
+        const title = m ? m.title : "your ranking";
+        const fresh = n.ts > (S.notifSeen || "");
+        return `<button class="row" data-notif="${esc(n.movie)}" style="${fresh ? "background:var(--accent-soft)" : ""}">
+          ${avatarHTML(n.liker, n.hue, n.url, "width:34px;height:34px;font-size:13px")}
+          <span class="meta"><span class="t" style="font-weight:600;font-size:13.5px;white-space:normal">
+            <b>${esc(n.liker)}</b> liked your take on <b>${esc(title)}</b></span>
+          <span class="d">${esc(relTime(n.ts))}</span></span>
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="var(--bad)" stroke="var(--bad)" stroke-width="2"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
+        </button>`;
+      }).join("")}</div>`
+    : `<div class="empty" style="padding:36px 20px"><div class="big" aria-hidden="true">🔔</div>
+        <p>No notifications yet. When someone likes one of your rankings or hot takes, it shows up here.</p></div>`;
+  openSheet(`<h1 class="h1">Notifications</h1>${body}`);
+  sheet.querySelectorAll("[data-notif]").forEach(b => b.addEventListener("click", () => openDetail(b.dataset.notif)));
+  // opening marks everything read
+  if(list.length){ S.notifSeen = list[0].ts; save(); }
+  setNotifBadge(0);
+}
 
 async function toggleCloudLike(userId, movieId, btn){
   if(!authed()){ toast("Sign in to like rankings"); openAuthSheet("login"); return; }
@@ -1311,7 +1367,8 @@ function openClaimHandle(){
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){}
   saveAuth(null);
-  CLOUD.profile = null; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set();
+  CLOUD.profile = null; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.notifs = [];
+  setNotifBadge(0);
   S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
   showGate();
 }
@@ -2220,6 +2277,7 @@ $("#themeBtn").addEventListener("click", () => {
   applyTheme(themeMode);
   toast("Theme: " + themeMode);
 });
+$("#notifBtn").addEventListener("click", openNotifications);
 
 /* ---------- keyboard shortcuts ---------- */
 document.addEventListener("keydown", e => {
