@@ -1038,17 +1038,43 @@ function openAuthSheet(mode){
     if(pass.length < 8) return err("Password needs at least 8 characters.");
     $("#ausubmit").textContent = "…";
     try{
-      const path = signup ? "/auth/v1/signup" : "/auth/v1/token?grant_type=password";
+      const path = signup
+        ? "/auth/v1/signup?redirect_to=" + encodeURIComponent(location.origin + location.pathname)
+        : "/auth/v1/token?grant_type=password";
       const r = await fetch(SUPA_URL + path, {method:"POST",
         headers:{apikey:SUPA_KEY, "Content-Type":"application/json"},
         body: JSON.stringify({email, password: pass})});
       const d = await r.json();
-      if(!r.ok) return err(d.msg || d.error_description || d.message || "Something went wrong — try again.");
+      if(!r.ok){
+        const msg = d.msg || d.error_description || d.message || "Something went wrong — try again.";
+        err(msg);
+        // stuck half-signed-up? (signed up but never confirmed) — offer a way out
+        if(/confirm/i.test(msg) || /already registered/i.test(msg)){
+          $("#auerr").insertAdjacentHTML("afterend",
+            `<button class="pillbtn soft" id="aurescue" style="justify-self:start">Resend confirmation email</button>`);
+          $("#aurescue").addEventListener("click", async () => {
+            const rr = await fetch(SUPA_URL + "/auth/v1/resend", {method:"POST",
+              headers:{apikey:SUPA_KEY, "Content-Type":"application/json"},
+              body: JSON.stringify({type:"signup", email,
+                options:{email_redirect_to: location.origin + location.pathname}})});
+            toast(rr.ok ? "Confirmation email sent 📬 — click the link, you'll be signed in here" : "Couldn't send — wait a minute and retry");
+          });
+        }
+        return;
+      }
       if(signup && !d.access_token){
         openSheet(`<div class="result"><h2>Check your inbox 📬</h2>
-          <p>We sent a confirmation link to <b>${esc(email)}</b>.<br>Click it, then come back and log in.</p>
-          <button class="pillbtn acc" id="audone">Log in</button></div>`);
+          <p>We sent a confirmation link to <b>${esc(email)}</b>.<br>Clicking it signs you in here automatically.<br>Nothing after a few minutes? Check spam, or resend.</p>
+          <div style="display:flex;gap:9px"><button class="pillbtn acc" id="audone">I've confirmed — log in</button>
+          <button class="pillbtn" id="auresend">Resend email</button></div></div>`);
         $("#audone").addEventListener("click", () => openAuthSheet("login"));
+        $("#auresend").addEventListener("click", async () => {
+          const rr = await fetch(SUPA_URL + "/auth/v1/resend", {method:"POST",
+            headers:{apikey:SUPA_KEY, "Content-Type":"application/json"},
+            body: JSON.stringify({type:"signup", email,
+              options:{email_redirect_to: location.origin + location.pathname}})});
+          toast(rr.ok ? "Confirmation email resent 📬" : "Couldn't resend — wait a minute and try again");
+        });
         return;
       }
       saveAuth({access_token:d.access_token, refresh_token:d.refresh_token,
@@ -1835,12 +1861,47 @@ document.addEventListener("keydown", e => {
 S.watch = S.watch.filter(id => getMovie(id));
 updateBadge();
 nav("feed");
-if(authed()){
-  if(!S.onboarded) openOnboarding(0);
-  pullCloud().then(() => { if(!CLOUD.profile && authed()) openClaimHandle(); else render(cur); });
-} else if(!S.guestChosen){
-  showGate();
-} else if(!S.onboarded){
-  openOnboarding(0);
+/* Email links (confirmation, magic, recovery) land back here with tokens in
+   the URL fragment — pick them up and complete the sign-in. Runs at boot and
+   again on hashchange in case the fragment arrives after load. */
+async function handleAuthHash(){
+  const h = new URLSearchParams((location.hash || "").replace(/^#/, ""));
+  if(h.get("error_description")){
+    history.replaceState(null, "", location.pathname + location.search);
+    setTimeout(() => toast(h.get("error_description")), 500);
+    return "error";
+  }
+  if(h.get("access_token")){
+    saveAuth({access_token: h.get("access_token"), refresh_token: h.get("refresh_token"),
+      expires_at: Math.floor(Date.now()/1000) + (parseInt(h.get("expires_in"),10) || 3600), user: null});
+    history.replaceState(null, "", location.pathname + location.search);
+    try{
+      const r = await fetch(SUPA_URL + "/auth/v1/user",
+        {headers:{apikey:SUPA_KEY, Authorization:"Bearer " + AUTH.access_token}});
+      if(r.ok){ AUTH.user = await r.json(); saveAuth(AUTH); toast("Email confirmed ✓"); return "token"; }
+      saveAuth(null);
+    }catch(e){ saveAuth(null); }
+  }
+  return null;
 }
+async function enterSignedIn(){
+  hideGate();
+  await pullCloud();
+  if(!CLOUD.profile && authed()) openClaimHandle();
+  else if(!S.onboarded) openOnboarding(0);
+  else render(cur);
+}
+window.addEventListener("hashchange", async () => {
+  if(await handleAuthHash() === "token") enterSignedIn();
+});
+(async () => {
+  await handleAuthHash();
+  if(authed()){
+    enterSignedIn();
+  } else if(!S.guestChosen){
+    showGate();
+  } else if(!S.onboarded){
+    openOnboarding(0);
+  }
+})();
 </script>
