@@ -375,6 +375,7 @@
 
 <script>
 'use strict';
+const BUILD = "2026.07.24-7"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -1578,7 +1579,8 @@ function renderProfile(){
       <button class="pillbtn" id="importBtn">Restore backup</button>
       ${authed() ? `<button class="pillbtn" id="logoutBtn">Log out</button>` : ""}
     </div>
-    <button class="danger" id="resetBtn">Reset all my data</button>`;
+    <button class="danger" id="resetBtn">Reset all my data</button>
+    <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
   $("#editBtn").addEventListener("click", () => openAccountForm());
   $("#tasteBtn").addEventListener("click", () => { O = null; openOnboarding(1); });
   const lo = $("#logoutBtn"); if(lo) lo.addEventListener("click", doLogout);
