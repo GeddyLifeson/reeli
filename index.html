@@ -408,7 +408,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-19"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-20"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -832,7 +832,7 @@ fetch(SUPA_URL + "/rest/v1/profiles?select=avatar_url&limit=1",
   .then(r => { if(r.ok) PSEL += ",avatar_url"; }).catch(() => {});
 let AUTH = null;
 try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){}
-const CLOUD = { profile:null, follows:new Set(), feed:[], myLikes:new Set(), notifs:[] };
+const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), notifs:[] };
 function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){} }
 function authed(){ return !!(AUTH && AUTH.access_token); }
 function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
@@ -945,7 +945,9 @@ async function pullCloud(){
   PULLING = true;
   try{
     const pr = await sb("/rest/v1/profiles?id=eq." + myId() + "&select=*");
-    CLOUD.profile = pr.ok ? (await pr.json())[0] || null : null;
+    // only trust "no profile" when the fetch actually SUCCEEDED — a network
+    // failure must never strand an already-set-up user in "finish setup"
+    if(pr.ok){ CLOUD.profile = (await pr.json())[0] || null; CLOUD.profileLoaded = true; }
     if(CLOUD.profile){
       S.profile = {name: CLOUD.profile.display_name, handle: "@"+CLOUD.profile.handle, hue: CLOUD.profile.avatar_hue,
         avatarUrl: CLOUD.profile.avatar_url || null};
@@ -1330,16 +1332,20 @@ function openAuthSheet(mode){
 }
 function openClaimHandle(){
   const P = S.profile || {name:"", hue:172};
+  // locked: this MUST be completed — a signed-in user needs a profile to sync
+  // and be found. An explicit "Not now" is the only way out (signs back out).
   openSheet(`
-    <h1 class="h1">Claim your handle</h1>
-    <p class="sub">This is how Reelmates find you. Letters, numbers and _ only.</p>
+    <h1 class="h1">Almost there — claim your handle</h1>
+    <p class="sub">You're signed in. Pick a display name and @handle so your list syncs and Reelmates can find you.</p>
     <div style="display:grid;gap:10px">
       <input class="field" id="chname" placeholder="Display name" maxlength="40" value="${esc(P.name === "Guest" ? "" : P.name)}">
       <input class="field" id="chhandle" placeholder="@handle" maxlength="20">
       <div class="swatches">${AVATAR_HUES.map(h => `<button class="swatch ${P.hue===h?"cur":""}" data-chue="${h}" style="background:hsl(${h} 45% 45%)" aria-label="Avatar color"></button>`).join("")}</div>
       <div id="cherr" style="color:var(--bad);font-size:12.5px;display:none"></div>
       <button class="pillbtn acc" id="chsave" style="padding:11px 20px">Finish</button>
-    </div>`);
+      <button class="ghostlink" id="chcancel" style="margin-top:2px">Not now — sign out</button>
+    </div>`, true);
+  $("#chcancel").addEventListener("click", () => { closeSheet(true); doLogout(); });
   ["chname","chhandle"].forEach(fid => $("#"+fid).addEventListener("keydown", e => { if(e.key === "Enter") $("#chsave").click(); }));
   let hue = P.hue;
   sheet.querySelectorAll("[data-chue]").forEach(b => b.addEventListener("click", () => {
@@ -1358,7 +1364,7 @@ function openClaimHandle(){
     if(!r.ok) return err("Couldn't save — try again.");
     CLOUD.profile = {id:myId(), handle, display_name:name, avatar_hue:hue};
     S.profile = {name, handle:"@"+handle, hue};
-    save(); closeSheet();
+    save(); closeSheet(true);
     toast(`Welcome to Reeli, ${name} 🎬`);
     queueSync();
     afterAuthEntry();
@@ -1367,7 +1373,7 @@ function openClaimHandle(){
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){}
   saveAuth(null);
-  CLOUD.profile = null; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.notifs = [];
+  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.notifs = [];
   setNotifBadge(0);
   S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
   showGate();
@@ -1731,14 +1737,21 @@ function renderProfile(){
   const dist = [["Loved", S.loved.length, "var(--good)"],["Fine", S.fine.length, "var(--mid)"],["Not for me", S.disliked.length, "var(--bad)"]];
   const P = S.profile || {name:"Guest", handle:"@guest", hue:172};
   const cloud = authed() && CLOUD.profile;
+  // only after a CONFIRMED cloud check showing no profile — never during load or on a failed fetch
+  const needsSetup = authed() && CLOUD.profileLoaded && !CLOUD.profile;
   $("#profileWrap").innerHTML = `
     <div class="phead">
-      ${avatarHTML(P.name, P.hue, P.avatarUrl)}
-      <div style="flex:1;min-width:0"><div class="pname">${esc(P.name)}</div>
-        <div class="phandle">${esc(P.handle)}${cloud ? ` · ${esc(AUTH.user && AUTH.user.email || "")}` : " · guest mode"}</div></div>
-      <button class="pillbtn" id="editBtn">Edit</button>
+      ${avatarHTML(needsSetup ? "?" : P.name, P.hue, P.avatarUrl)}
+      <div style="flex:1;min-width:0"><div class="pname">${needsSetup ? "Finish setup" : esc(P.name)}</div>
+        <div class="phandle">${cloud ? esc(P.handle) + " · " + esc(AUTH.user && AUTH.user.email || "") : needsSetup ? "signed in — pick a handle" : esc(P.handle) + " · guest mode"}</div></div>
+      ${needsSetup ? "" : `<button class="pillbtn" id="editBtn">Edit</button>`}
     </div>
-    ${cloud ? "" : `<div class="card" style="padding:14px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+    ${needsSetup ? `<div class="card" style="padding:14px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+      <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5;flex:1;min-width:200px">
+      You're signed in, but you haven't picked a handle yet — so your list isn't syncing and friends can't find you. Finish setup to fix that.</span>
+      <button class="pillbtn acc" id="finishSetupBtn">Finish setup</button>
+      <button class="pillbtn" id="logoutBtn2">Sign out</button></div>`
+    : cloud ? "" : `<div class="card" style="padding:14px;margin-bottom:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5;flex:1;min-width:200px">
       You're in guest mode — everything saves to this browser only. Create a free account to sync your list and follow Reelmates.</span>
       <button class="pillbtn acc" id="signupBtn">Create account</button>
@@ -1789,7 +1802,9 @@ function renderProfile(){
     </div>
     <button class="danger" id="resetBtn">Reset all my data</button>
     <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
-  $("#editBtn").addEventListener("click", () => openAccountForm());
+  const eb = $("#editBtn"); if(eb) eb.addEventListener("click", () => openAccountForm());
+  const fsb = $("#finishSetupBtn"); if(fsb) fsb.addEventListener("click", openClaimHandle);
+  const lo2 = $("#logoutBtn2"); if(lo2) lo2.addEventListener("click", doLogout);
   $("#tasteBtn").addEventListener("click", () => { O = null; openOnboarding(1); });
   $("#profileWrap").querySelectorAll("[data-acc]").forEach(b => b.addEventListener("click", () => {
     S.ui.accent = b.dataset.acc === "" ? null : +b.dataset.acc;
@@ -2018,8 +2033,9 @@ function wireCommon(root){
 
 /* ---------- overlay ---------- */
 const overlay = $("#overlay"), sheet = $("#sheet");
-function openSheet(html){ sheet.innerHTML = `<div class="grab"></div>` + html; overlay.classList.add("on"); hydratePosters(sheet); }
-function closeSheet(){ overlay.classList.remove("on"); sheet.innerHTML = ""; }
+let sheetLocked = false;
+function openSheet(html, locked){ sheetLocked = !!locked; sheet.innerHTML = (locked ? "" : `<div class="grab"></div>`) + html; overlay.classList.add("on"); hydratePosters(sheet); }
+function closeSheet(force){ if(sheetLocked && !force) return; sheetLocked = false; overlay.classList.remove("on"); sheet.innerHTML = ""; }
 overlay.addEventListener("click", e => { if(e.target === overlay) closeSheet(); });
 document.addEventListener("keydown", e => { if(e.key === "Escape") closeSheet(); });
 
