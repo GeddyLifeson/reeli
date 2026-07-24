@@ -3,6 +3,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="theme-color" content="#0E6B5C">
 <meta name="description" content="Reeli is Beli for movies: rank every film you've seen in head-to-head matchups — no star ratings — then follow your Reelmates, compare taste, and swap hot takes.">
+<meta name="google-site-verification" content="FcWbi3D38FNkUqmb4DM6b851-CtJQJit_0riy9w-eXg">
 <link rel="canonical" href="https://reeli.org/">
 <script type="application/ld+json">
 {
@@ -403,7 +404,7 @@
 
 <script>
 'use strict';
-const BUILD = "2026.07.24-12"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.24-13"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database: [id, title, year, genre, director, hue] ---------- */
 const DB = [
   ["godfather","The Godfather",1972,"Crime","Francis Ford Coppola",28],
@@ -658,14 +659,7 @@ function enrich(id, after){
     }
     if(after) after(!!meta);
   };
-  const withTT = tt => {
-    if(!tt) return finish(null);
-    cineMeta(tt, meta => {
-      if(meta || m.kind) return finish(meta);
-      // not in the movie catalog — try series (TV shows)
-      cineMeta(tt, meta2 => { if(meta2) m.kind = "series"; finish(meta2); }, "series");
-    }, m.kind || "movie");
-  };
+  const withTT = tt => tt ? cineMeta(tt, finish) : finish(null);
   if(/^tt\d+$/.test(id)){ withTT(id); return; }
   const c = cacheEntry(id);
   if(c && c.tt){ withTT(c.tt); return; }
@@ -1515,7 +1509,7 @@ function movieRowHTML(m){
   return `<div class="row">
     ${posterHTML(m,"p-sm")}
     <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
-      <span class="t">${esc(m.title)}${m.kind === "series" ? '<span class="tvchip">TV</span>' : ""}</span><span class="d">${esc(mline(m))}</span>
+      <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
     </button>
     ${ranked ? scoreHTML(scoreOf(m.id))
       : `<button class="iconbtn ${inWatch?"on":""}" data-watch="${m.id}" aria-label="${inWatch?"Remove from":"Add to"} watchlist" title="Watchlist">
@@ -1526,38 +1520,27 @@ function movieRowHTML(m){
 function runLiveSearch(q){
   const seq = ++liveSeq;
   liveState = "loading";
-  let movies = null, shows = null, done = 0;
-  const finish = () => {
-    if(++done < 2 || seq !== liveSeq) return;
-    if(movies === null && shows === null){ liveState = "err"; liveResults = []; }
+  cineSearch(q, metas => {
+    if(seq !== liveSeq) return;
+    if(metas === null){ liveState = "err"; liveResults = []; }
     else {
       liveState = "done";
       const locals = new Set([...DB.map(a => normT(a[1])+"|"+a[2]), ...S.custom.map(m => normT(m.title)+"|"+m.year)]);
-      liveResults = [
-        ...(movies || []).slice(0, 14).map(r => cineToMovie(r)),
-        ...(shows || []).slice(0, 8).map(r => cineToMovie(r, "series")),
-      ].filter(m => !locals.has(normT(m.title)+"|"+m.year));
+      liveResults = metas.slice(0, 22).map(r => cineToMovie(r))
+        .filter(m => !locals.has(normT(m.title)+"|"+m.year));
       liveResults.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     }
     if(cur === "search") renderSearch();
-  };
-  cineSearch(q, r => { movies = r; finish(); });
-  cineSearch(q, r => { shows = r; finish(); }, "series");
+  });
 }
-let TREND = null, TRENDS = null; // movies / series: null, "loading"/"err", or arrays
+let TREND = null; // null = not fetched, "loading"/"err", or array of movies
 function loadTrending(){
-  TREND = "loading"; TRENDS = "loading";
+  TREND = "loading";
   getJSON(CINE + "/catalog/movie/top.json", d => {
     if(!d || !Array.isArray(d.metas)){ TREND = "err"; return; }
     const locals = new Set(DB.map(a => normT(a[1])+"|"+a[2]));
     TREND = d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year));
     TREND.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    if(cur === "search" && !query.trim()) renderSearch();
-  });
-  getJSON(CINE + "/catalog/series/top.json", d => {
-    if(!d || !Array.isArray(d.metas)){ TRENDS = "err"; return; }
-    TRENDS = d.metas.slice(0, 8).map(r => cineToMovie(r, "series"));
-    TRENDS.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     if(cur === "search" && !query.trim()) renderSearch();
   });
 }
@@ -1571,8 +1554,6 @@ function renderSearch(){
   const rows = list.map(movieRowHTML).join("");
   const trendRows = (!q && Array.isArray(TREND))
     ? TREND.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
-  const showRows = (!q && Array.isArray(TRENDS))
-    ? TRENDS.filter(m => !isRanked(m.id)).slice(0, 6).map(movieRowHTML).join("") : "";
   let liveHTML = "";
   if(q){
     const liveRows = liveResults.map(movieRowHTML).join("");
@@ -1588,8 +1569,7 @@ function renderSearch(){
       <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
       <input id="q" type="search" placeholder="Search any movie, director, genre…" value="${esc(query)}" autocomplete="off">
     </div>
-    ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
-    ${showRows ? `<div class="sechead">Trending shows</div><div class="card">${showRows}</div>` : ""}
+    ${trendRows ? `<div class="sechead">Popular right now</div><div class="card">${trendRows}</div>` : ""}
     ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
     ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}
     ${liveHTML}
