@@ -1,10 +1,15 @@
 {
+  "id": "/",
   "name": "Reeli — rank every movie you've seen",
   "short_name": "Reeli",
   "description": "Rank movies in head-to-head matchups, build your scored list, and follow your Reelmates.",
+  "lang": "en",
+  "dir": "ltr",
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
+  "orientation": "portrait",
+  "categories": ["entertainment", "lifestyle", "social"],
   "background_color": "#0C1210",
   "theme_color": "#0E6B5C",
   "icons": [
