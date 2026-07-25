@@ -1,6 +1,6 @@
 
 'use strict';
-const BUILD = "2026.07.25-4"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.25-5"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database ----------
    Named keys, not positional tuples: every consumer reads m.title / m.year
    rather than a[1] / a[2], so adding a field can never silently shift the
@@ -112,6 +112,7 @@ function seed(){
     myFeed:[],
     feedSeen:"",
     notifSeen:"",
+    lbQueue:[],
     ui:{accent:null, wall:null, wallTitle:null},
   };
 }
@@ -129,6 +130,7 @@ function load(){
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
+        if(!Array.isArray(s.lbQueue)) s.lbQueue = [];
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
         // untouched, clear them so real users start with their own list
         if(s.loved.join() === "parasite,whiplash,spiderverse,madmax" &&
@@ -1626,6 +1628,7 @@ function profileActionsHTML(d){
   return `<div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
       ${d.cloud ? `<button class="pillbtn soft" id="shareProfBtn">Share my profile</button>` : ""}
       ${d.ids.length ? `<button class="pillbtn soft" id="shareBtn">Share my top 5</button>` : ""}
+      <button class="pillbtn soft" id="lbImportBtn">Import from Letterboxd</button>
       <button class="pillbtn" id="exportBtn">Back up data</button>
       <button class="pillbtn" id="importBtn">Restore backup</button>
       ${authed() ? `<button class="pillbtn" id="logoutBtn">Log out</button>` : ""}
@@ -1848,6 +1851,165 @@ function toggleLocalLike(k){
   save(); renderFeed();
 }
 
+/* ---------- Letterboxd import ----------
+   Letterboxd's data export (letterboxd.com/settings/data) is a ZIP; the file
+   we want is ratings.csv with columns Date,Name,Year,Letterboxd URI,Rating
+   where Rating is 0.5–5.0. The user uploads that CSV directly. Two modes:
+   auto (convert stars → buckets, instant list) or manual (rank each yourself). */
+let LB_ROWS = null; // parsed rows awaiting a mode choice
+
+/* minimal RFC-4180-ish CSV parser: handles quoted fields, embedded commas,
+   and doubled "" escapes. Returns array of string arrays. */
+function parseCSV(text){
+  const rows = []; let row = [], field = "", i = 0, q = false;
+  text = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  while(i < text.length){
+    const c = text[i];
+    if(q){
+      if(c === '"'){ if(text[i+1] === '"'){ field += '"'; i++; } else q = false; }
+      else field += c;
+    } else {
+      if(c === '"') q = true;
+      else if(c === ","){ row.push(field); field = ""; }
+      else if(c === "\n"){ row.push(field); rows.push(row); row = []; field = ""; }
+      else field += c;
+    }
+    i++;
+  }
+  if(field.length || row.length){ row.push(field); rows.push(row); }
+  return rows;
+}
+function parseLetterboxdCSV(text){
+  const rows = parseCSV(text).filter(r => r.length && r.some(c => c.trim()));
+  if(!rows.length) return [];
+  const head = rows[0].map(h => h.trim().toLowerCase());
+  const iName = head.indexOf("name"), iYear = head.indexOf("year"), iRating = head.indexOf("rating");
+  if(iName < 0) return []; // not a Letterboxd ratings export
+  return rows.slice(1).map(r => ({
+    name: (r[iName] || "").trim(),
+    year: iYear >= 0 ? parseInt(r[iYear], 10) || null : null,
+    rating: iRating >= 0 ? parseFloat(r[iRating]) : null, // 0.5–5.0, or NaN if unrated
+  })).filter(x => x.name);
+}
+/* Letterboxd stars (0.5–5) → Reeli bucket. Mirrors the score thresholds. */
+function lbBucket(stars){ return stars >= 3.5 ? "loved" : stars >= 2.5 ? "fine" : "disliked"; }
+
+/* resolve one {name, year} to a rankable movie id, throttled. Uses the catalog
+   (cineSearch + pickMeta from matching.js); on no match, mints a custom entry
+   so nothing in the user's history is silently dropped. */
+function lbResolve(item, cb){
+  const want = item.name;
+  cineSearch(want, metas => {
+    let id = null;
+    const hit = metas ? pickMeta(metas, want, item.year) : null;
+    if(hit){
+      id = hit.imdb_id || hit.id;
+      if(!getMovie(id)) LIVE[id] = cineToMovie(hit);
+      const tt = /^tt\d+$/.test(id) ? id : (hit.imdb_id || null);
+      if(tt && !POSTERS.cache[id]){ POSTERS.cache[id] = {u: hit.poster || metahubPoster(tt), tt}; }
+    } else {
+      id = "c_lb_" + normT(want).replace(/\s+/g,"_") + "_" + (item.year||"");
+      if(!getMovie(id)) S.custom.push({id, title:want, year:item.year||"—", genre:"", dir:"", hue:hueFromTitle(want), poster:null});
+    }
+    cb(id);
+  });
+}
+/* run a throttled resolve over many items with a progress callback */
+function lbResolveAll(items, onProgress, onDone){
+  const out = []; let i = 0;
+  const step = () => {
+    if(i >= items.length){ savePosters(); onDone(out); return; }
+    const item = items[i];
+    lbResolve(item, id => {
+      out.push({id, item});
+      i++; onProgress(i, items.length);
+      setTimeout(step, 140); // be gentle on the catalog API
+    });
+  };
+  step();
+}
+function openLetterboxdImport(){
+  openSheet(`
+    <h1 class="h1">Import from Letterboxd</h1>
+    <p class="sub">On Letterboxd, go to <b>Settings → Import &amp; Export → Export your data</b>. Unzip it and upload <b>ratings.csv</b> below.</p>
+    <label class="pillbtn acc" style="text-align:center;cursor:pointer;display:block;padding:12px">
+      Choose ratings.csv<input id="lbFile" type="file" accept=".csv,text/csv" style="display:none">
+    </label>
+    <div id="lbStatus" class="sub" style="margin-top:12px"></div>`);
+}
+function onLetterboxdFile(inp){
+  const f = inp.files && inp.files[0];
+  if(!f) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    LB_ROWS = parseLetterboxdCSV(String(reader.result || ""));
+    const rated = LB_ROWS.filter(r => r.rating && !isNaN(r.rating));
+    const st = $("#lbStatus");
+    if(!LB_ROWS.length){ if(st){ st.textContent = "That doesn't look like a Letterboxd ratings.csv — it needs a Name column."; } return; }
+    const already = new Set([...DB, ...S.custom].map(m => normT(m.title)));
+    if(st) st.innerHTML = `
+      <div class="card" style="padding:14px;display:grid;gap:10px">
+        <div><b>${LB_ROWS.length}</b> films found${rated.length < LB_ROWS.length ? ` (${rated.length} rated)` : ""}. How do you want to import?</div>
+        <button class="pillbtn acc" id="lbAuto" style="padding:11px">Auto-rank from my Letterboxd ratings</button>
+        <button class="pillbtn" id="lbManual" style="padding:11px">Rank them myself, one by one</button>
+        <span class="d" style="color:var(--muted);font-size:11.5px">Auto places each film into loved / fine / not-for-me by its star rating and orders them. You can re-rank any of them later.</span>
+      </div>`;
+  };
+  reader.onerror = () => { const st = $("#lbStatus"); if(st) st.textContent = "Couldn't read that file — try again."; };
+  reader.readAsText(f);
+}
+function lbProgressUI(done, total){
+  const st = $("#lbStatus");
+  if(st) st.innerHTML = `<div class="card" style="padding:16px;text-align:center">
+    <p style="margin:0 0 8px">Matching your films… <b>${done}/${total}</b></p>
+    <div class="bar" style="height:10px;border-radius:6px;background:var(--surface2);overflow:hidden">
+      <span style="display:block;height:100%;width:${Math.round(done/total*100)}%;background:var(--accent);border-radius:6px"></span></div>
+    <p class="d" style="color:var(--muted);font-size:11.5px;margin:10px 0 0">Sit tight — large lists take a minute.</p></div>`;
+}
+function runLetterboxdAuto(){
+  const rated = (LB_ROWS || []).filter(r => r.rating && !isNaN(r.rating));
+  if(!rated.length){ const st=$("#lbStatus"); if(st) st.textContent="No star ratings found in that file to auto-rank from."; return; }
+  // highest-rated first so within-bucket order (and derived scores) track the stars
+  rated.sort((a,b) => b.rating - a.rating);
+  lbProgressUI(0, rated.length);
+  lbResolveAll(rated, lbProgressUI, resolved => {
+    let added = 0;
+    resolved.forEach(({id, item}) => {
+      if(!id || isRanked(id)) return;
+      const b = lbBucket(item.rating);
+      S[b].push(id); // already sorted by rating desc, so append keeps that order
+      S.watch = S.watch.filter(x => x !== id);
+      added++;
+    });
+    save();
+    closeSheet();
+    toast(`Imported ${added} film${added===1?"":"s"} from Letterboxd 🎬`);
+    nav("ranks");
+    LB_ROWS = null;
+  });
+}
+function runLetterboxdManual(){
+  const items = LB_ROWS || [];
+  if(!items.length) return;
+  lbProgressUI(0, items.length);
+  lbResolveAll(items, lbProgressUI, resolved => {
+    S.lbQueue = resolved.map(r => r.id).filter(id => id && !isRanked(id));
+    save();
+    LB_ROWS = null;
+    if(!S.lbQueue.length){ closeSheet(); toast("Everything in that file is already ranked"); return; }
+    rankNextImport();
+  });
+}
+/* how many imported films are still waiting to be ranked */
+function lbRemaining(){ return (S.lbQueue || []).filter(id => !isRanked(id)).length; }
+/* pull the next un-ranked film from the import queue and start its matchup */
+function rankNextImport(){
+  while(S.lbQueue && S.lbQueue.length && isRanked(S.lbQueue[0])) S.lbQueue.shift();
+  if(!S.lbQueue || !S.lbQueue.length){ save(); closeSheet(); toast("Import complete — every film ranked 🎬"); nav("ranks"); return; }
+  save();
+  startRate(S.lbQueue[0]);
+}
+
 /* ---------- event delegation ----------
    Every screen and sheet is drawn by writing innerHTML, which throws away all
    the elements inside it. The old code re-queried and re-bound dozens of
@@ -1915,6 +2077,9 @@ const CLICK_IDS = {
   loginBtn:       () => openAuthSheet("login"),
   exportBtn:      () => exportBackup(),
   importBtn:      () => importBackup(),
+  lbImportBtn:    () => openLetterboxdImport(),
+  lbAuto:         () => runLetterboxdAuto(),
+  lbManual:       () => runLetterboxdManual(),
   shareBtn:       () => shareTopFive(),
   resetBtn:       () => resetEverything(),
   shareProfBtn:   () => openShare("Check my movie taste on Reeli 🎬",
@@ -1950,7 +2115,8 @@ const CLICK_IDS = {
   ccancel:        () => closeSheet(),
   // ranking result
   doneBtn:        () => { commitTake(); closeSheet(); nav("ranks"); },
-  moreBtn:        () => { commitTake(); closeSheet(); nav("search"); },
+  moreBtn:        () => { commitTake(); if(S.lbQueue && S.lbQueue.length){ S.lbQueue = []; save(); } closeSheet(); nav("search"); },
+  lbNext:         () => { commitTake(); rankNextImport(); },
   undoBtn:        () => undoPlacement(),
   // wallpaper picker
   wallOff:        () => { S.ui.wall = null; S.ui.wallTitle = null; save(); applyUI(); closeSheet(); renderProfile(); },
@@ -1964,7 +2130,7 @@ const CLICK_IDS = {
 
 /* text inputs that react as you type, and the avatar file picker */
 const INPUT_IDS = { q: el => onSearchInput(el), mq: el => onMateQueryInput(el) };
-const CHANGE_IDS = { pfpFile: el => uploadAvatar(el) };
+const CHANGE_IDS = { pfpFile: el => uploadAvatar(el), lbFile: el => onLetterboxdFile(el) };
 /* pressing Enter in these fields submits the form they belong to (or, in the
    movie search box, skips the debounce and searches the catalog right now) */
 const ENTER_IDS = { auemail: () => submitAuth(), aupass: () => submitAuth(),
@@ -2228,9 +2394,9 @@ function placeAt(idx){
       ${scoreHTML(sc,"bigscore")}
       <p>Locked in at <b>#${rk}</b> of ${allRanked().length} on your list.<br>Scores shift as your ranking grows — that's the fun part.</p>
       <input class="field" id="takeInp" aria-label="Your hot take about this movie (optional)" placeholder="Add a hot take (optional) — your Reelmates will see it" maxlength="280" style="width:100%">
-      <div style="display:flex;gap:9px;margin-top:6px">
-        <button class="pillbtn acc" id="doneBtn">See my ranking</button>
-        <button class="pillbtn" id="moreBtn">Rank another</button>
+      <div style="display:flex;gap:9px;margin-top:6px;flex-wrap:wrap;justify-content:center">
+        ${lbRemaining() ? `<button class="pillbtn acc" id="lbNext">Next import (${lbRemaining()} left)</button>` : `<button class="pillbtn acc" id="doneBtn">See my ranking</button>`}
+        <button class="pillbtn" id="moreBtn">${lbRemaining() ? "Stop importing" : "Rank another"}</button>
         <button class="pillbtn" id="undoBtn">Undo</button>
       </div>
     </div>`);

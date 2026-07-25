@@ -19,8 +19,9 @@
 /* v5: app.js feed items now store a real timestamp and render it relative,
    with a pull-time backfill for older entries — a v4 shell would still show
    the frozen "just now".
-   v6: search covers TV shows + anime (series catalog), so app.js changed. */
-const CACHE = "reeli-v6";
+   v6: search covers TV shows + anime (series catalog), so app.js changed.
+   v7: Letterboxd CSV import (auto + manual modes) added to app.js. */
+const CACHE = "reeli-v7";
 /* the app shell: enough to boot and look right with no network at all.
    Precached individually rather than with addAll() so one missing/blocked file
    can't fail the whole install and leave the user with no service worker. */
