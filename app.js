@@ -1,6 +1,6 @@
 
 'use strict';
-const BUILD = "2026.07.25-3"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.25-4"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database ----------
    Named keys, not positional tuples: every consumer reads m.title / m.year
    rather than a[1] / a[2], so adding a field can never silently shift the
@@ -284,7 +284,7 @@ function enrich(id, after){
     }
     if(after) after(!!meta);
   };
-  const withTT = tt => tt ? cineMeta(tt, finish) : finish(null);
+  const withTT = tt => tt ? cineMeta(tt, finish, m.kind) : finish(null);
   if(/^tt\d+$/.test(id)){ withTT(id); return; }
   const c = cacheEntry(id);
   if(c && c.tt){ withTT(c.tt); return; }
@@ -444,7 +444,7 @@ function clearSyncPending(){
 }
 
 /* ---------- navigation ---------- */
-const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank a movie", watch:"Watchlist", profile:"Profile"};
+const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank anything", watch:"Watchlist", profile:"Profile"};
 let cur = "feed";
 function nav(to){
   cur = to;
@@ -1365,7 +1365,7 @@ function movieRowHTML(m){
   return `<div class="row">
     ${posterHTML(m,"p-sm")}
     <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
-      <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
+      <span class="t">${esc(m.title)}${m.kind === "series" ? '<span class="tvchip">TV</span>' : ""}</span><span class="d">${esc(mline(m))}</span>
     </button>
     ${ranked ? scoreHTML(scoreOf(m.id))
       : `<button class="iconbtn ${inWatch?"on":""}" data-watch="${m.id}" aria-label="${inWatch?"Remove from":"Add to"} watchlist" title="Watchlist">
@@ -1376,27 +1376,39 @@ function movieRowHTML(m){
 function runLiveSearch(q){
   const seq = ++liveSeq;
   liveState = "loading";
-  cineSearch(q, metas => {
-    if(seq !== liveSeq) return;
-    if(metas === null){ liveState = "err"; liveResults = []; }
+  // search movies AND series (TV + anime) in parallel, merge when both land
+  let movies = null, shows = null, done = 0;
+  const finish = () => {
+    if(++done < 2 || seq !== liveSeq) return;
+    if(movies === null && shows === null){ liveState = "err"; liveResults = []; }
     else {
       liveState = "done";
       const locals = new Set([...DB, ...S.custom].map(m => normT(m.title)+"|"+m.year));
-      liveResults = metas.slice(0, 22).map(r => cineToMovie(r))
-        .filter(m => !locals.has(normT(m.title)+"|"+m.year));
+      liveResults = [
+        ...(movies || []).slice(0, 16).map(r => cineToMovie(r)),
+        ...(shows || []).slice(0, 10).map(r => cineToMovie(r, "series")),
+      ].filter(m => !locals.has(normT(m.title)+"|"+m.year));
       liveResults.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     }
     if(cur === "search") renderSearch();
-  });
+  };
+  cineSearch(q, r => { movies = r; finish(); });
+  cineSearch(q, r => { shows = r; finish(); }, "series");
 }
-let TREND = null; // null = not fetched, "loading"/"err", or array of movies
+let TREND = null, TRENDS = null; // movies / series: null, "loading"/"err", or arrays
 function loadTrending(){
-  TREND = "loading";
+  TREND = "loading"; TRENDS = "loading";
   getJSON(CINE + "/catalog/movie/top.json", d => {
     if(!d || !Array.isArray(d.metas)){ TREND = "err"; return; }
     const locals = new Set(DB.map(m => normT(m.title)+"|"+m.year));
     TREND = d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year));
     TREND.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
+    if(cur === "search" && !query.trim()) renderSearch();
+  });
+  getJSON(CINE + "/catalog/series/top.json", d => {
+    if(!d || !Array.isArray(d.metas)){ TRENDS = "err"; return; }
+    TRENDS = d.metas.slice(0, 8).map(r => cineToMovie(r, "series"));
+    TRENDS.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     if(cur === "search" && !query.trim()) renderSearch();
   });
 }
@@ -1410,6 +1422,8 @@ function renderSearch(){
   const rows = list.map(movieRowHTML).join("");
   const trendRows = (!q && Array.isArray(TREND))
     ? TREND.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+  const showRows = (!q && Array.isArray(TRENDS))
+    ? TRENDS.filter(m => !isRanked(m.id)).slice(0, 6).map(movieRowHTML).join("") : "";
   let liveHTML = "";
   if(q){
     const liveRows = liveResults.map(movieRowHTML).join("");
@@ -1419,13 +1433,14 @@ function renderSearch(){
       : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
   }
   $("#searchWrap").innerHTML = `
-    <h1 class="h1">Rank a movie</h1>
-    <p class="sub">Search any movie ever released — live from the worldwide catalog.</p>
+    <h1 class="h1">Rank anything</h1>
+    <p class="sub">Movies, TV shows, anime — search the whole worldwide catalog.</p>
     <div class="searchbar">
       <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
-      <input id="q" aria-label="Search movies" type="search" placeholder="Search any movie, director, genre…" value="${esc(query)}" autocomplete="off">
+      <input id="q" aria-label="Search movies and shows" type="search" placeholder="Search any movie, show, or anime…" value="${esc(query)}" autocomplete="off">
     </div>
-    ${trendRows ? `<div class="sechead">Popular right now</div><div class="card">${trendRows}</div>` : ""}
+    ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+    ${showRows ? `<div class="sechead">Trending shows</div><div class="card">${showRows}</div>` : ""}
     ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
     ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}
     ${liveHTML}
@@ -1672,7 +1687,7 @@ function resetEverything(){
 
 /* ---------- onboarding: Beli-style taste picker (guest-first) ---------- */
 const AVATAR_HUES = [172, 262, 22, 335, 205, 45];
-const OB_GENRES = ["Drama","Sci-Fi","Crime","Thriller","Comedy","Animation","Horror","Action","Romance","Fantasy","Mystery","Documentary","War","Adventure","Western"];
+const OB_GENRES = ["Drama","Sci-Fi","Crime","Thriller","Comedy","Animation","Anime","Horror","Action","Romance","Fantasy","Mystery","Documentary","War","Adventure","Western"];
 const OB_MAKERS = ["Christopher Nolan","Martin Scorsese","Steven Spielberg","Quentin Tarantino","Denis Villeneuve","David Fincher","Hayao Miyazaki","Stanley Kubrick","Coen Brothers","Wes Anderson","Alfred Hitchcock","Ridley Scott","James Cameron","Greta Gerwig","Jordan Peele","Damien Chazelle"];
 let O = null;
 function tasteScore(m){
