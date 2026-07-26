@@ -71,10 +71,21 @@ export function makeSeed(i, DB){
       who: {name: pick(NASTY) || "Someone", hue: Math.floor(r() * 360), url: r() < .3 ? "https://x/y?a=1&b=2" : null}});
   }
 
+  /* Local feed items come in two shapes: current ones carry a real ISO `ts`
+     (rendered relative), and ones written by builds before that carry only a
+     frozen `time` string. Seed both so the render covers each path. */
   const myFeed = [];
-  for(let f = 0; f < Math.floor(r() * 4) && f < all.length; f++)
-    myFeed.push({movie: all[f], score: Math.round(r() * 100) / 10, time: "just now",
-      note: r() < .5 ? pick(NASTY) : "", likes: Math.floor(r() * 5), rank: f + 1});
+  for(let f = 0; f < Math.floor(r() * 4) && f < all.length; f++){
+    /* legacy-vs-current is chosen from the seed index, not the rng, so adding
+       this coverage does not shift every later draw and rewrite unrelated
+       screens' hashes */
+    const legacy = (i + f) % 4 === 0;
+    const item = {movie: all[f], score: Math.round(r() * 100) / 10,
+      note: r() < .5 ? pick(NASTY) : "", likes: Math.floor(r() * 5), rank: f + 1};
+    if(legacy) item.time = "just now";          // written by a build before ts existed
+    else item.ts = "2026-07-2" + f + "T00:00:00Z"; // current shape: rendered relative
+    myFeed.push(item);
+  }
 
   const people = [];
   for(let p = 0; p < Math.floor(r() * 4); p++)
@@ -91,6 +102,8 @@ export function makeSeed(i, DB){
       loved, fine, disliked, watch, custom,
       likes: {me0: r() < .5, me1: r() < .5},
       notes, myFeed, feedSeen: "", notifSeen: "",
+      /* also index-derived, for the same reason as `legacy` above */
+      lbQueue: i % 4 === 1 ? all.slice(0, i % 3) : [],
       ui: {accent: r() < .5 ? null : pick([355, 42, 218, 275, 105]), wall: r() < .5 ? null : "tt0068646", wallTitle: r() < .5 ? null : pick(NASTY)},
     },
     AUTH: authed ? {access_token: "tok", refresh_token: "r", expires_at: 9e9, user: {id: "me", email: pick(["a@b.co", "o'neil@x.com"])}} : null,

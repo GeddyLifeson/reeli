@@ -1,6 +1,6 @@
 
 'use strict';
-const BUILD = "2026.07.25-5"; // bump on every deploy — shown on the Profile screen
+const BUILD = "2026.07.25-6"; // bump on every deploy — shown on the Profile screen
 /* ---------- movie database ----------
    Named keys, not positional tuples: every consumer reads m.title / m.year
    rather than a[1] / a[2], so adding a field can never silently shift the
@@ -154,26 +154,75 @@ function updateBadge(){
   if(btn) btn.setAttribute("aria-label", S.watch.length ? `Watchlist, ${S.watch.length} saved` : "Watchlist");
 }
 
+/* id -> movie index over S.custom, memoized on (identity, length) exactly like
+   rankedIndex below. S.custom is a plain array that getMovie() used to scan
+   linearly, which is fine for a handful of hand-added films — but a cloud pull
+   pushes one entry per ranking it doesn't already know, and a Letterboxd import
+   adds one per unmatched title, so it reaches thousands. getMovie() is called
+   once per row by every list render, which made that render quadratic (84ms for
+   3000 entries). Every mutation of S.custom either pushes (length changes) or
+   replaces the array (identity changes). */
+let CUSTOM_CACHE = null;
+function customIndex(){
+  const C = S.custom, c = CUSTOM_CACHE;
+  if(c && c.C === C && c.len === C.length) return c.map;
+  const map = new Map();
+  for(const m of C) if(m && !map.has(m.id)) map.set(m.id, m);
+  CUSTOM_CACHE = {C, len: C.length, map};
+  return map;
+}
 function getMovie(id){
   if(MOVIES[id]) return MOVIES[id];
   if(LIVE[id]) return LIVE[id];
-  return S.custom.find(m => m.id === id) || null;
+  return customIndex().get(id) || null;
 }
 /* persist a live-search movie into the user's personal DB so it survives reloads */
 function ensureSaved(id){
   if(MOVIES[id]) return;
-  if(S.custom.some(m => m.id === id)) return;
+  if(customIndex().has(id)) return;
   if(LIVE[id]) S.custom.push(LIVE[id]);
 }
-function allRanked(){ return [...S.loved, ...S.fine, ...S.disliked]; }
-function isRanked(id){ return allRanked().includes(id); }
-function bucketOf(id){ for(const b of ["loved","fine","disliked"]) if(S[b].includes(id)) return b; return null; }
-function scoreOf(id){
-  const b = bucketOf(id); if(!b) return null;
-  const arr = S[b], i = arr.indexOf(id), {hi,lo} = BUCKETS[b];
-  return Math.round((hi - (hi-lo)*(i+1)/(arr.length+1))*10)/10;
+/* Memoized index over the three bucket arrays.
+
+   These three functions used to each rebuild the whole ranked list —
+   [...loved, ...fine, ...disliked] — and then scan it linearly. That is a fresh
+   allocation plus an O(n) walk *per call*, and the callers run inside loops:
+   rankOf() is called once per row by the rankings screen, isRanked() once per
+   candidate by search, trending and the Letterboxd import queue. At a dozen
+   movies nobody notices; a Letterboxd import can leave thousands, where
+   lbRemaining() measured 45ms and the rankings screen went quadratic.
+
+   The cache is valid while all three arrays are the same objects at the same
+   lengths. Every mutation in this file satisfies that: removeRanking reassigns
+   via filter, placeAt splices, the importers and pullRankings push. There is no
+   in-place same-length permutation of these arrays (no sort/reverse anywhere).
+   If one is ever introduced, invalidate explicitly with bumpRanked(). */
+let RANKED_CACHE = null, RANKED_EPOCH = 0;
+function bumpRanked(){ RANKED_EPOCH++; }
+function rankedIndex(){
+  const L = S.loved, F = S.fine, D = S.disliked, c = RANKED_CACHE;
+  if(c && c.epoch === RANKED_EPOCH && c.L === L && c.F === F && c.D === D
+     && c.ll === L.length && c.fl === F.length && c.dl === D.length) return c;
+  const list = L.concat(F, D);
+  const pos = new Map();       // id -> overall rank (1-based)
+  const where = new Map();     // id -> {b: bucket name, i: index within it}
+  for(let i = 0; i < list.length; i++) if(!pos.has(list[i])) pos.set(list[i], i + 1);
+  for(const b of ["loved","fine","disliked"])
+    S[b].forEach((id, i) => { if(!where.has(id)) where.set(id, {b, i}); });
+  RANKED_CACHE = {epoch: RANKED_EPOCH, L, F, D,
+    ll: L.length, fl: F.length, dl: D.length, list, set: new Set(list), pos, where};
+  return RANKED_CACHE;
 }
-function rankOf(id){ return allRanked().indexOf(id)+1; }
+/* read-only: callers must not mutate the returned array (none do) */
+function allRanked(){ return rankedIndex().list; }
+function isRanked(id){ return rankedIndex().set.has(id); }
+function bucketOf(id){ const w = rankedIndex().where.get(id); return w ? w.b : null; }
+function scoreOf(id){
+  const w = rankedIndex().where.get(id); if(!w) return null;
+  const {hi,lo} = BUCKETS[w.b], len = S[w.b].length;
+  return Math.round((hi - (hi-lo)*(w.i+1)/(len+1))*10)/10;
+}
+function rankOf(id){ return rankedIndex().pos.get(id) || 0; }
 function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
 function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
 
@@ -651,6 +700,14 @@ async function patchProfile(){
 }
 async function syncCloud(){
   if(!authed()) return;
+  /* Never push while a pull is in flight.
+     queueSync() refuses to SCHEDULE during a pull, but a timer scheduled just
+     before login fires straight through that check — and pushTable() deletes
+     every cloud row the local state doesn't have. Local state mid-pull is the
+     guest's (often empty), so that delete wiped the user's cloud watchlist and
+     rankings, which then pulled back empty. Bail and let pullCloud's own
+     queueSync() re-run us once the local state is whole. */
+  if(PULLING){ markSyncPending("pull-in-flight"); return; }
   if(isOffline()){ markSyncPending("offline"); return; }
   // one outer catch, as before: a step that throws aborts the rest of the cycle.
   // `step` only exists so the log says WHICH half of the sync died.
@@ -718,6 +775,23 @@ async function pullWatchlist(){
   rows.forEach(r => { if(!getMovie(r.movie_id)) S.custom.push(rowToMovie(r)); });
   S.watch = [...new Set([...rows.map(r => r.movie_id), ...S.watch])];
 }
+/* The profile fetch failed (offline, a blip, a 5xx). Don't guess: retry a few
+   times with backoff, and only once a request genuinely SUCCEEDS with no row do
+   we ask the user to claim a handle. Without this an existing account gets sent
+   through setup again every time the network hiccups at login. */
+let profileRetryT = null;
+function retryProfile(attempt){
+  attempt = attempt || 1;
+  clearTimeout(profileRetryT);
+  if(!authed() || CLOUD.profile || attempt > 4) return;
+  profileRetryT = setTimeout(async () => {
+    if(!authed() || CLOUD.profile) return;
+    try{ await pullProfile(); }catch(e){ logErr("profile retry", e); }
+    if(CLOUD.profile){ save(); render(cur); queueSync(); }
+    else if(CLOUD.profileLoaded) openClaimHandle();
+    else retryProfile(attempt + 1);
+  }, attempt * 2000);
+}
 async function pullLikes(){
   const lk = await sb(pgPath("likes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
   CLOUD.myLikes = lk.ok ? new Set((await lk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
@@ -725,6 +799,7 @@ async function pullLikes(){
 async function pullCloud(){
   if(!authed()) return;
   PULLING = true;
+  clearTimeout(syncT); // drop any sync queued before login; it would push guest state
   // same single outer catch as before — a throwing step skips the rest of the
   // pull; `step` only names which one for the log.
   let step = "profile";
@@ -1101,8 +1176,13 @@ async function submitAuth(){
       expires_at: Math.floor(Date.now()/1000) + (d.expires_in || 3600), user:d.user});
     closeSheet();
     await pullCloud();
-    if(!CLOUD.profile) openClaimHandle();
-    else { toast("Welcome back, " + CLOUD.profile.display_name + " 🎬"); afterAuthEntry(); }
+    /* Only send someone to "claim a handle" when the profile fetch actually
+       came back and said there is none. A failed request leaves profileLoaded
+       false — treating that as "no profile" is what made an existing account
+       re-run setup on every login. */
+    if(CLOUD.profile){ toast("Welcome back, " + CLOUD.profile.display_name + " 🎬"); afterAuthEntry(); }
+    else if(CLOUD.profileLoaded) openClaimHandle();
+    else { toast("Couldn't reach your profile — retrying"); afterAuthEntry(); retryProfile(); }
   }catch(e){ authErr("Network hiccup — try again."); }
   finally{ const b = $("#ausubmit"); if(b) b.textContent = signup ? "Sign up" : "Log in"; }
 }
@@ -1210,13 +1290,22 @@ function feedSegsHTML(){
     <button class="seg ${feedTab==="mates"?"cur":""}" data-ftab="mates">Reelmates</button>
   </div>`;
 }
-/* Activity tab: your own rankings first, then your Reelmates'. */
+/* Activity tab: yours and your Reelmates' interleaved, newest first.
+   These used to be concatenated — every one of your own rankings above every
+   Reelmate's — so a film you ranked two days ago sat above a friend's from
+   45 minutes ago. Both sources carry an ISO `ts`, so sort on it. Local items
+   keep their index in S.myFeed (their like key is derived from it), so the
+   index travels with the item rather than being the position after sorting. */
 function feedActivityHTML(){
-  const cloudHTML = CLOUD.feed.map(f => feedItemHTML(f, 0)).join("");
-  const mine = S.myFeed.map((f,i) => feedItemHTML(f, i)).join("");
+  const items = [
+    ...S.myFeed.map((f, i) => ({f, i})),
+    ...CLOUD.feed.map(f => ({f, i: 0})),
+  ];
+  const when = f => f.ts || "";            // legacy local rows have no ts: they sort last
+  items.sort((a, b) => (when(b.f) > when(a.f) ? 1 : when(b.f) < when(a.f) ? -1 : 0));
   const loadingMates = authed() && CLOUD.follows.size && !CLOUD.feedLoaded
     ? `<p class="sub" style="margin:0 0 10px">Checking your Reelmates' latest…</p>` : "";
-  const all = loadingMates + mine + cloudHTML;
+  const all = loadingMates + items.map(x => feedItemHTML(x.f, x.i)).join("");
   const body = all ? `<div class="fgrid">${all}</div>` :
     `<div class="empty"><div class="big" aria-hidden="true">🎞️</div>
         <p>Your feed starts with you. Rank a movie and it lands here — and once you add Reelmates, their rankings join the stream.</p>
@@ -2570,7 +2659,8 @@ async function handleAuthHash(){
 async function enterSignedIn(){
   hideGate();
   await pullCloud();
-  if(!CLOUD.profile && authed()) openClaimHandle();
+  if(authed() && !CLOUD.profile && CLOUD.profileLoaded) openClaimHandle();
+  else if(authed() && !CLOUD.profile) retryProfile();
   else if(!S.onboarded) openOnboarding(0);
   else render(cur);
 }

@@ -58,8 +58,10 @@ function build(){
     globalThis.__T.pullWatchlist = pullWatchlist;
     globalThis.__T.syncCloud = syncCloud;
     globalThis.__T.queueSync = queueSync;
+    globalThis.__T.pullCloud = pullCloud;
     globalThis.__T.pgPath = pgPath;
     Object.defineProperty(globalThis.__T, "SYNC_PENDING", {get: () => SYNC_PENDING});
+    Object.defineProperty(globalThis.__T, "PULLING", {get: () => PULLING, set: v => { PULLING = v; }});
   `, ctx, {filename: "app.js"});
   const T = g.__T;
   T.AUTH = {access_token: "tok", refresh_token: "r", expires_at: 9e9, user: {id: "me"}};
@@ -153,6 +155,18 @@ const path = c => c.url.replace(/^https:\/\/[^/]+/, "");
   eq(B.T.CLOUD.profile, null, "a successful fetch returning no row does clear the profile");
   eq(B.T.CLOUD.profileLoaded, true, "and records that the answer is trustworthy");
 }
+{
+  /* The flag is the whole point: an existing account whose profile fetch failed
+     must not be sent through "claim a handle" again. Only a fetch that SUCCEEDS
+     and returns nothing means "this user has never set up". */
+  const B = build();
+  B.T.CLOUD.profile = null;
+  B.T.CLOUD.profileLoaded = false;
+  B.setPlan([{match: () => true, throws: true}]);
+  try{ await B.T.pullProfile(); }catch(e){ /* the caller's outer catch owns this */ }
+  eq(B.T.CLOUD.profileLoaded, false,
+     "a profile fetch that never answered leaves profileLoaded false, so setup is not offered on a guess");
+}
 
 /* ================= 4. pullRankings / pullWatchlist: merge, don't clobber == */
 {
@@ -227,6 +241,38 @@ const path = c => c.url.replace(/^https:\/\/[^/]+/, "");
   const alert = B.g.__registry.get("#alert");
   ok(alert && /sync/i.test(alert.innerHTML), "and raises a user-visible alert rather than only a console warning");
   ok(alert && alert.hidden === false, "the alert is shown, not left hidden");
+}
+
+/* ===== a sync must never run while a pull is in flight =====
+   pushTable deletes every cloud row the local state does not have. Mid-pull the
+   local state is still the guest's — often an empty watchlist — so a sync that
+   lands in that window deleted the user's whole cloud watchlist, which then
+   pulled back empty. queueSync() refused to SCHEDULE during a pull, but a timer
+   scheduled just before login fired straight through it. */
+{
+  const B = build();
+  B.T.S = Object.assign(B.T.S, {loved: [], fine: [], disliked: [], watch: [], notes: {}, taste: null, ui: {}});
+  B.setPlan([{match: () => true, status: 200, body: []}]);
+  B.T.PULLING = true;
+  B.reset(); await B.T.syncCloud();
+  eq(B.calls.length, 0, "syncCloud issues nothing while a pull is in flight (it would delete cloud rows the pull has not merged yet)");
+  eq(B.T.SYNC_PENDING, true, "and the work is still marked as owed, so the pull's own queueSync re-runs it");
+
+  B.T.PULLING = false;
+  B.reset(); await B.T.syncCloud();
+  ok(B.calls.length > 0, "once the pull finishes, the same sync goes through");
+}
+{
+  /* the other half: starting a pull cancels a sync queued moments earlier */
+  const B = build();
+  B.T.S = Object.assign(B.T.S, {loved: [], fine: [], disliked: [], watch: ["godfather"], notes: {}, taste: null, ui: {}});
+  B.setPlan([{match: () => true, status: 200, body: []}]);
+  let cleared = false;
+  const realClear = B.g.clearTimeout;
+  B.g.clearTimeout = t => { cleared = true; return realClear(t); };
+  B.T.queueSync();                 // a change made as a guest, sync pending
+  await B.T.pullCloud();           // then they log in
+  ok(cleared, "pullCloud clears any sync queued before login rather than letting it push guest state");
 }
 
 console.log(fail ? `\nFAILED (${fail})` : "\nALL PASS");

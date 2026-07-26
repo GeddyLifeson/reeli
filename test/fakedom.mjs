@@ -65,6 +65,23 @@ export class FakeEl {
   toBlob(cb){ cb(null); }
 }
 
+/* A Date whose "now" never moves, and whose locale formatting does not depend on
+   the machine running the tests.
+
+   The app renders timestamps relatively (relTime: "just now" / "2h" / "1d"), so
+   with the real clock the same seeded state hashes differently on every run —
+   the snapshot would rot within hours and locale-format differently in CI than
+   on a laptop. Both are pinned here instead of being kept out of the seeds,
+   so time-dependent markup is covered rather than avoided. */
+export const FROZEN_NOW = Date.UTC(2026, 6, 26, 12, 0, 0); // 2026-07-26T12:00:00Z
+export class FrozenDate extends Date {
+  constructor(...a){ super(...(a.length ? a : [FROZEN_NOW])); }
+  static now(){ return FROZEN_NOW; }
+  toLocaleDateString(){ return this.toISOString().slice(0, 10); }
+  toLocaleTimeString(){ return this.toISOString().slice(11, 19); }
+  toLocaleString(){ return this.toISOString(); }
+}
+
 /* Build one isolated global object for a vm context. */
 export function makeGlobals(){
   const registry = new Map();
@@ -104,6 +121,8 @@ export function makeGlobals(){
   const g = {
     document, localStorage,
     fetch: response,
+    /* see FrozenDate below — the clock must not move, or any render that turns a
+       timestamp into "2h"/"1d" would hash differently tomorrow than it does today */
     console: { log(){}, warn(){}, error(){} },
     /* no serviceWorker key at all: the app feature-detects with `in` */
     navigator: { share: undefined, clipboard: undefined },
@@ -113,7 +132,7 @@ export function makeGlobals(){
     AbortController, URLSearchParams, URL, Image: FakeEl,
     setTimeout: () => 0, clearTimeout(){}, setInterval: () => 0, clearInterval(){},
     prompt: () => null, confirm: () => false, alert(){},
-    Math, JSON, Date, Object, Array, String, Number, Boolean, Set, Map, Promise,
+    Math, JSON, Date: FrozenDate, Object, Array, String, Number, Boolean, Set, Map, Promise,
     RegExp, Error, parseInt, parseFloat, isNaN, encodeURIComponent, decodeURIComponent,
     /* window-level listeners (online, hashchange) — recorded, never fired */
     addEventListener(){}, removeEventListener(){}, scrollTo(){}, open(){},
