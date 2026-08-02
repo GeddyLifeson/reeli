@@ -200,6 +200,8 @@ function typeNoun(type, n){
   if(type === "show") return n === 1 ? "show" : "shows";
   return n === 1 ? "movie" : "movies";
 }
+/* "a movie" / "a show" / "an anime" */
+function typeNounA(type){ return (type === "anime" ? "an " : "a ") + typeNoun(type, 1); }
 
 /* Memoized index over the three bucket arrays, optionally narrowed to one
    media type.
@@ -1649,7 +1651,7 @@ function renderSearch(){
     ${liveHTML}
     <div class="sechead">Missing something?</div>
     <div class="card"><div class="row">
-      <span class="meta"><span class="t">Add a ${esc(typeNoun(searchType,1))} manually</span><span class="d">Home movies? Festival one-offs? Put it on the board.</span></span>
+      <span class="meta"><span class="t">Add ${esc(typeNounA(searchType))} manually</span><span class="d">Home movies? Festival one-offs? Put it on the board.</span></span>
       <button class="pillbtn soft" data-addcustom>Add</button>
     </div></div>`;
 }
@@ -2489,9 +2491,8 @@ function detailAction(a){
 
 /* ---------- custom add ---------- */
 function openCustom(){
-  const noun = typeNoun(searchType, 1);
   openSheet(`
-    <h1 class="h1">Add a ${noun}</h1>
+    <h1 class="h1">Add ${esc(typeNounA(searchType))}</h1>
     <p class="sub">It joins your personal database and is ready to rank.</p>
     <div style="display:grid;gap:10px">
       <input id="ctitle" aria-label="Title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
