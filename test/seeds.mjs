@@ -40,7 +40,22 @@ export const NASTY = [
 export function makeSeed(i, DB){
   const r = rng(i * 2654435761 + 12345);
   const pick = a => a[Math.floor(r() * a.length)];
-  const ids = DB.map(m => m.id);
+
+  /* a slice of custom entries are shows/anime, not movies, and — like real
+     ones — can land in the ranking buckets right alongside the built-in
+     (movie-only) library, so the type-scoped rank/score math gets exercised
+     against mixed-type buckets, not just homogeneous ones. */
+  const custom = [];
+  const nCustom = Math.floor(r() * 3);
+  for(let c = 0; c < nCustom; c++){
+    const kind = pick([undefined, undefined, "show", "anime"]);
+    const item = {id: "c_" + i + "_" + c, title: pick(NASTY) || "Untitled", year: r() < .5 ? 1999 + c : "—",
+      genre: pick(["Film", "Drama", "—", pick(NASTY)]), dir: pick(["—", "Someone O'Neil", ""]), hue: Math.floor(r() * 360)};
+    if(kind) item.kind = kind;
+    custom.push(item);
+  }
+
+  const ids = DB.map(m => m.id).concat(custom.map(c => c.id));
   const shuffled = ids.slice().sort(() => r() - 0.5);
   const take = n => shuffled.splice(0, n);
 
@@ -54,12 +69,6 @@ export function makeSeed(i, DB){
   const hasCloudProfile = authed && r() < 0.7;
   const notes = {};
   all.forEach(id => { if(r() < 0.3) notes[id] = pick(NASTY); });
-
-  const custom = [];
-  const nCustom = Math.floor(r() * 3);
-  for(let c = 0; c < nCustom; c++)
-    custom.push({id: "c_" + i + "_" + c, title: pick(NASTY) || "Untitled", year: r() < .5 ? 1999 + c : "—",
-      genre: pick(["Film", "Drama", "—", pick(NASTY)]), dir: pick(["—", "Someone O'Neil", ""]), hue: Math.floor(r() * 360)});
 
   const feed = [];
   const nFeed = Math.floor(r() * 4);
@@ -124,10 +133,13 @@ export function makeSeed(i, DB){
       mateSugg: pick([[], people, "loading"]),   // never null: null triggers a network fetch
       rankFilter: pick(["all", "loved", "fine", "disliked"]),
       rankGenre: pick(["", "Drama", "Sci-Fi", "Crime"]),
+      rankType: pick(["movie", "show", "anime"]),
       query: pick(["", "the", "nolan", pick(NASTY)]),
       liveResults: custom.map(c => ({...c, id: c.id + "_live"})),
       liveState: pick(["idle", "loading", "err", "done"]),
-      TREND: pick(["err", "loading", []]),        // never null: null triggers a network fetch
+      searchType: pick(["movie", "show", "anime"]),
+      // never null: null triggers a network fetch
+      TRENDING: {movie: pick(["err", "loading", []]), show: pick(["err", "loading", []]), anime: pick(["err", "loading", []])},
     },
   };
 }
