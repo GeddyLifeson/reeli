@@ -391,6 +391,11 @@ function enrich(id, after){
   const m = getMovie(id);
   // in-flight guard: a second open while fetching must not start a parallel chain
   if(!m || m.enriched || ENRICHING.has(id)){ if(after) after(false); return; }
+  // Cinemeta has no anime catalog, so a title search here would silently
+  // attach some other (movie) title's metadata to an anime entry — catalog
+  // anime already arrives pre-enriched from AniList; a hand-added one just
+  // stays without a description/rating rather than getting a wrong one
+  if(m.kind === "anime"){ m.enriched = true; if(after) after(false); return; }
   ENRICHING.add(id);
   const finish = meta => {
     ENRICHING.delete(id);
@@ -1397,7 +1402,7 @@ function personRowHTML(p){
         ${avatarHTML(p.name, p.hue, p.avatarUrl)}
         <button class="meta" data-person="${esc(p.id)}" style="text-align:left;min-width:0">
         <span class="t">${esc(p.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">@${esc(p.handle)}</span></span>
-        <span class="d">${p.ranked} movie${p.ranked===1?"":"s"} ranked · tap for profile</span></button>
+        <span class="d">${p.ranked} title${p.ranked===1?"":"s"} ranked · tap for profile</span></button>
         <button class="pillbtn ${p.following?"soft":"acc"}" data-pfollow="${esc(p.id)}">${p.following ? "Reelmates ✓" : "Add"}</button>
       </div>`;
 }
@@ -1623,13 +1628,24 @@ function renderSearch(){
       ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
   } else {
     const label = TYPE_LABEL[searchType].toLowerCase();
+    // hand-added shows/anime (the "Add manually" escape hatch below) live only
+    // in S.custom — same local pool the movie tab already searches/browses
+    const customPool = S.custom.filter(m => typeOf(m.id) === searchType);
+    const customList = q
+      ? customPool.filter(m => (m.title+" "+m.genre+" "+m.year).toLowerCase().includes(q))
+      : customPool.filter(m => !isRanked(m.id));
+    const customRows = customList.map(movieRowHTML).join("");
     const trend = TRENDING[searchType];
     const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
-    body = trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>`
-      : q ? ""
-      : trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
-      : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
-      : `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>`;
+    const trendEmpty = !q && !trendRows
+      ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
+        : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
+        : ""
+      : "";
+    body = `
+      ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
+      ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
+      ${!q && !trendRows && !customRows && !trendEmpty ? `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>` : ""}`;
   }
   let liveHTML = "";
   if(q){
@@ -1651,7 +1667,7 @@ function renderSearch(){
     ${liveHTML}
     <div class="sechead">Missing something?</div>
     <div class="card"><div class="row">
-      <span class="meta"><span class="t">Add ${esc(typeNounA(searchType))} manually</span><span class="d">Home movies? Festival one-offs? Put it on the board.</span></span>
+      <span class="meta"><span class="t">Add ${esc(typeNounA(searchType))} manually</span><span class="d">${searchType === "movie" ? "Home movies? Festival one-offs?" : searchType === "show" ? "A local series the catalog missed?" : "A title the catalog missed?"} Put it on the board.</span></span>
       <button class="pillbtn soft" data-addcustom>Add</button>
     </div></div>`;
 }
