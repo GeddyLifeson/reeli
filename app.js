@@ -332,6 +332,11 @@ function cineMeta(id, cb, kind){
     else setTimeout(() => getJSON(url, d2 => cb(d2 && d2.meta ? d2.meta : null)), 900); // one retry for transient failures
   });
 }
+/* Cinemeta's own vocabulary for a movie's `kind`: "series" for shows,
+   undefined (Cinemeta's default) for movies. Anime has no Cinemeta catalog
+   at all — callers must check for that themselves and skip Cinemeta
+   entirely rather than pass its result through this. */
+function cineCatalog(m){ return m.kind === "show" ? "series" : undefined; }
 /* normT / lev / pickMeta live in matching.js — pure title-matching logic,
    loaded before this file and covered by test-ranking.mjs */
 function cineToMovie(r, kind){
@@ -410,8 +415,7 @@ function enrich(id, after){
     }
     if(after) after(!!meta);
   };
-  const cineKind = m.kind === "show" ? "series" : undefined; // Cinemeta's own vocabulary; anime never reaches here (pre-enriched)
-  const withTT = tt => tt ? cineMeta(tt, finish, cineKind) : finish(null);
+  const withTT = tt => tt ? cineMeta(tt, finish, cineCatalog(m)) : finish(null); // anime never reaches here (pre-enriched, guarded above)
   if(/^tt\d+$/.test(id)){ withTT(id); return; }
   const c = cacheEntry(id);
   if(c && c.tt){ withTT(c.tt); return; }
@@ -423,7 +427,7 @@ function enrich(id, after){
       savePosters();
     }
     withTT(tt);
-  });
+  }, cineCatalog(m));
 }
 
 /* pre-resolved posters for the whole built-in library (library id -> IMDb id +
@@ -476,6 +480,14 @@ function pumpPosters(){
     POSTERS.queued.delete(id);
     POSTERS.busy = false; pumpPosters(); return;
   }
+  // Cinemeta has no anime catalog to search — a hand-added anime with no
+  // AniList cover image just has no poster, rather than risking a Cinemeta
+  // movie-catalog false match under the same title
+  if(m.kind === "anime"){
+    POSTERS.cache[id] = "x"; savePosters();
+    POSTERS.queued.delete(id);
+    POSTERS.busy = false; pumpPosters(); return;
+  }
   cineSearch(m.title, metas => {
     if(metas === null){
       // transient failure: retry up to 2 more times before giving up
@@ -491,7 +503,7 @@ function pumpPosters(){
       POSTERS.queued.delete(id);
     }
     setTimeout(() => { POSTERS.busy = false; pumpPosters(); }, 400);
-  });
+  }, cineCatalog(m));
 }
 function scoreHTML(sc, extra){ return `<div class="score ${scoreClass(sc)} ${extra||""}">${sc.toFixed(1)}</div>`; }
 let toastT;
