@@ -26,11 +26,12 @@ create index profiles_name_idx on public.profiles (lower(display_name));
 -- ============ rankings: one row per (user, movie) ============
 create table public.rankings (
   user_id uuid not null references public.profiles(id) on delete cascade,
-  movie_id text not null,             -- IMDb id (tt...) or library/custom id
+  movie_id text not null,             -- IMDb id (tt...), AniList id (al:...), or library/custom id
   title text not null,
   year int, genre text, director text, poster text,
+  media_type text not null default 'movie' check (media_type in ('movie','show','anime')),
   bucket text not null check (bucket in ('loved','fine','disliked')),
-  position int not null,              -- order within the bucket
+  position int not null,              -- order within the bucket (and media_type)
   score numeric(3,1) not null,
   note text check (char_length(note) <= 280),
   created_at timestamptz not null default now(),
@@ -48,6 +49,9 @@ create policy "users delete own rankings"
   on public.rankings for delete using ((select auth.uid()) = user_id);
 
 create index rankings_feed_idx on public.rankings (user_id, updated_at desc);
+-- profile sheet pulls "top 10 movies / top 10 shows / top 10 anime" as three
+-- separate queries (user_id + media_type, ordered by score)
+create index rankings_type_idx on public.rankings (user_id, media_type, score desc);
 
 -- ============ watchlist: private to each user ============
 create table public.watchlist (
@@ -55,6 +59,7 @@ create table public.watchlist (
   movie_id text not null,
   title text not null,
   year int, genre text, director text, poster text,
+  media_type text not null default 'movie' check (media_type in ('movie','show','anime')),
   added_at timestamptz not null default now(),
   primary key (user_id, movie_id)
 );

@@ -182,9 +182,29 @@ function ensureSaved(id){
   if(customIndex().has(id)) return;
   if(LIVE[id]) S.custom.push(LIVE[id]);
 }
-/* Memoized index over the three bucket arrays.
+/* Movies, TV shows and anime rank in three completely separate pools — a
+   head-to-head never pits a movie against a show, and "top 10" means top 10
+   of that one type. TYPES lists every pool; typeOf() says which one an id
+   belongs to, straight off the movie's `kind` (unset/"movie" -> "movie",
+   "show" -> "show", "anime" -> "anime"). */
+const TYPES = ["movie", "show", "anime"];
+const TYPE_LABEL = { movie:"Movies", show:"TV Shows", anime:"Anime" };
+function typeOf(id){
+  const m = getMovie(id);
+  const k = m && m.kind;
+  return k === "show" || k === "anime" ? k : "movie";
+}
+/* "1 movie" / "3 shows" / "3 anime" — anime doesn't pluralize */
+function typeNoun(type, n){
+  if(type === "anime") return "anime";
+  if(type === "show") return n === 1 ? "show" : "shows";
+  return n === 1 ? "movie" : "movies";
+}
 
-   These three functions used to each rebuild the whole ranked list —
+/* Memoized index over the three bucket arrays, optionally narrowed to one
+   media type.
+
+   These functions used to each rebuild the whole ranked list —
    [...loved, ...fine, ...disliked] — and then scan it linearly. That is a fresh
    allocation plus an O(n) walk *per call*, and the callers run inside loops:
    rankOf() is called once per row by the rankings screen, isRanked() once per
@@ -196,33 +216,42 @@ function ensureSaved(id){
    lengths. Every mutation in this file satisfies that: removeRanking reassigns
    via filter, placeAt splices, the importers and pullRankings push. There is no
    in-place same-length permutation of these arrays (no sort/reverse anywhere).
-   If one is ever introduced, invalidate explicitly with bumpRanked(). */
-let RANKED_CACHE = null, RANKED_EPOCH = 0;
-function bumpRanked(){ RANKED_EPOCH++; }
-function rankedIndex(){
-  const L = S.loved, F = S.fine, D = S.disliked, c = RANKED_CACHE;
+   If one is ever introduced, invalidate explicitly with bumpRanked(). One
+   cache entry per type (plus "all" for the cross-type view) is kept, all
+   sharing the same epoch/array-identity invalidation. */
+let RANKED_CACHE = new Map(), RANKED_EPOCH = 0;
+function bumpRanked(){ RANKED_EPOCH++; RANKED_CACHE.clear(); }
+function rankedIndex(type){
+  const key = type || "all";
+  const L = S.loved, F = S.fine, D = S.disliked, c = RANKED_CACHE.get(key);
   if(c && c.epoch === RANKED_EPOCH && c.L === L && c.F === F && c.D === D
      && c.ll === L.length && c.fl === F.length && c.dl === D.length) return c;
-  const list = L.concat(F, D);
-  const pos = new Map();       // id -> overall rank (1-based)
+  const narrow = arr => type ? arr.filter(id => typeOf(id) === type) : arr;
+  const arrs = { loved: narrow(L), fine: narrow(F), disliked: narrow(D) };
+  const list = arrs.loved.concat(arrs.fine, arrs.disliked);
+  const pos = new Map();       // id -> overall rank within this type (1-based)
   const where = new Map();     // id -> {b: bucket name, i: index within it}
   for(let i = 0; i < list.length; i++) if(!pos.has(list[i])) pos.set(list[i], i + 1);
   for(const b of ["loved","fine","disliked"])
-    S[b].forEach((id, i) => { if(!where.has(id)) where.set(id, {b, i}); });
-  RANKED_CACHE = {epoch: RANKED_EPOCH, L, F, D,
-    ll: L.length, fl: F.length, dl: D.length, list, set: new Set(list), pos, where};
-  return RANKED_CACHE;
+    arrs[b].forEach((id, i) => { if(!where.has(id)) where.set(id, {b, i}); });
+  const entry = {epoch: RANKED_EPOCH, L, F, D,
+    ll: L.length, fl: F.length, dl: D.length, list, set: new Set(list), pos, where, arrs};
+  RANKED_CACHE.set(key, entry);
+  return entry;
 }
-/* read-only: callers must not mutate the returned array (none do) */
-function allRanked(){ return rankedIndex().list; }
+/* read-only: callers must not mutate the returned array (none do).
+   allRanked() with no type is every ranked item across all three pools;
+   allRanked("show") etc. is that one pool. */
+function allRanked(type){ return rankedIndex(type).list; }
 function isRanked(id){ return rankedIndex().set.has(id); }
-function bucketOf(id){ const w = rankedIndex().where.get(id); return w ? w.b : null; }
+function bucketOf(id){ const w = rankedIndex(typeOf(id)).where.get(id); return w ? w.b : null; }
 function scoreOf(id){
-  const w = rankedIndex().where.get(id); if(!w) return null;
-  const {hi,lo} = BUCKETS[w.b], len = S[w.b].length;
+  const idx = rankedIndex(typeOf(id));
+  const w = idx.where.get(id); if(!w) return null;
+  const {hi,lo} = BUCKETS[w.b], len = idx.arrs[w.b].length;
   return Math.round((hi - (hi-lo)*(w.i+1)/(len+1))*10)/10;
 }
-function rankOf(id){ return rankedIndex().pos.get(id) || 0; }
+function rankOf(id){ return rankedIndex(typeOf(id)).pos.get(id) || 0; }
 function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
 function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
 
@@ -301,6 +330,11 @@ function cineMeta(id, cb, kind){
     else setTimeout(() => getJSON(url, d2 => cb(d2 && d2.meta ? d2.meta : null)), 900); // one retry for transient failures
   });
 }
+/* Cinemeta's own vocabulary for a movie's `kind`: "series" for shows,
+   undefined (Cinemeta's default) for movies. Anime has no Cinemeta catalog
+   at all — callers must check for that themselves and skip Cinemeta
+   entirely rather than pass its result through this. */
+function cineCatalog(m){ return m.kind === "show" ? "series" : undefined; }
 /* normT / lev / pickMeta live in matching.js — pure title-matching logic,
    loaded before this file and covered by test-ranking.mjs */
 function cineToMovie(r, kind){
@@ -308,8 +342,47 @@ function cineToMovie(r, kind){
   const m = { id: r.imdb_id || r.id, title: r.name,
     year: r.releaseInfo ? parseInt(String(r.releaseInfo).slice(0,4),10) || "—" : "—",
     genre: "", dir: "", hue: hash, poster: r.poster || null };
-  if(kind === "series") m.kind = "series";
+  if(kind === "show") m.kind = "show";
   return m;
+}
+
+/* ---------- AniList (free, keyless, GraphQL) ----------
+   Cinemeta's "series" catalog covers TV in general but has no reliable signal
+   for anime specifically, so anime gets its own source: AniList's public
+   GraphQL API, which is anime/manga-only and needs no API key. Ids are
+   prefixed "al:" so they never collide with an IMDb tt-id sharing an
+   otherwise-identical title. */
+const ANILIST = "https://graphql.anilist.co";
+const ANILIST_FIELDS = `id title{romaji english} startDate{year} coverImage{large}
+  genres description(asHtml:false) averageScore episodes format`;
+function anilistQuery(query, variables, cb){
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  fetch(ANILIST, {method:"POST", signal: ctl.signal,
+    headers:{"Content-Type":"application/json", Accept:"application/json"},
+    body: JSON.stringify({query, variables})})
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { clearTimeout(t); cb(d && d.data ? d.data : null); })
+    .catch(() => { clearTimeout(t); cb(null); });
+}
+function aniToMovie(r){
+  const hash = hueFromTitle(r.title.english || r.title.romaji);
+  return { id: "al:" + r.id, title: r.title.english || r.title.romaji,
+    year: r.startDate && r.startDate.year || "—",
+    genre: (r.genres && r.genres[0]) || "", dir: "", hue: hash,
+    poster: r.coverImage && r.coverImage.large || null,
+    desc: r.description ? r.description.replace(/<[^>]+>/g, "").trim() : null,
+    kind: "anime", enriched: true };
+}
+function anilistSearch(term, cb){
+  anilistQuery(
+    `query($s:String){Page(page:1,perPage:20){media(search:$s,type:ANIME,sort:SEARCH_MATCH){${ANILIST_FIELDS}}}}`,
+    {s: term}, d => cb(d ? d.Page.media.map(aniToMovie) : null));
+}
+function anilistTrending(cb){
+  anilistQuery(
+    `query{Page(page:1,perPage:14){media(type:ANIME,sort:TRENDING_DESC){${ANILIST_FIELDS}}}}`,
+    {}, d => cb(d ? d.Page.media.map(aniToMovie) : null));
 }
 /* one-line meta under a title: skip blanks */
 function mline(m){ return [m.year, m.genre, m.dir].filter(x => x && x !== "—").join(" · "); }
@@ -321,6 +394,11 @@ function enrich(id, after){
   const m = getMovie(id);
   // in-flight guard: a second open while fetching must not start a parallel chain
   if(!m || m.enriched || ENRICHING.has(id)){ if(after) after(false); return; }
+  // Cinemeta has no anime catalog, so a title search here would silently
+  // attach some other (movie) title's metadata to an anime entry — catalog
+  // anime already arrives pre-enriched from AniList; a hand-added one just
+  // stays without a description/rating rather than getting a wrong one
+  if(m.kind === "anime"){ m.enriched = true; if(after) after(false); return; }
   ENRICHING.add(id);
   const finish = meta => {
     ENRICHING.delete(id);
@@ -335,7 +413,7 @@ function enrich(id, after){
     }
     if(after) after(!!meta);
   };
-  const withTT = tt => tt ? cineMeta(tt, finish, m.kind) : finish(null);
+  const withTT = tt => tt ? cineMeta(tt, finish, cineCatalog(m)) : finish(null); // anime never reaches here (pre-enriched, guarded above)
   if(/^tt\d+$/.test(id)){ withTT(id); return; }
   const c = cacheEntry(id);
   if(c && c.tt){ withTT(c.tt); return; }
@@ -347,7 +425,7 @@ function enrich(id, after){
       savePosters();
     }
     withTT(tt);
-  });
+  }, cineCatalog(m));
 }
 
 /* pre-resolved posters for the whole built-in library (library id -> IMDb id +
@@ -400,6 +478,14 @@ function pumpPosters(){
     POSTERS.queued.delete(id);
     POSTERS.busy = false; pumpPosters(); return;
   }
+  // Cinemeta has no anime catalog to search — a hand-added anime with no
+  // AniList cover image just has no poster, rather than risking a Cinemeta
+  // movie-catalog false match under the same title
+  if(m.kind === "anime"){
+    POSTERS.cache[id] = "x"; savePosters();
+    POSTERS.queued.delete(id);
+    POSTERS.busy = false; pumpPosters(); return;
+  }
   cineSearch(m.title, metas => {
     if(metas === null){
       // transient failure: retry up to 2 more times before giving up
@@ -415,7 +501,7 @@ function pumpPosters(){
       POSTERS.queued.delete(id);
     }
     setTimeout(() => { POSTERS.busy = false; pumpPosters(); }, 400);
-  });
+  }, cineCatalog(m));
 }
 function scoreHTML(sc, extra){ return `<div class="score ${scoreClass(sc)} ${extra||""}">${sc.toFixed(1)}</div>`; }
 let toastT;
@@ -602,8 +688,10 @@ function relTime(ts){
   return new Date(ts).toLocaleDateString();
 }
 function rowToMovie(r){
-  return {id:r.movie_id, title:r.title, year:r.year || "—", genre:r.genre || "",
+  const m = {id:r.movie_id, title:r.title, year:r.year || "—", genre:r.genre || "",
     dir:r.director || "", hue:hueFromTitle(r.title), poster:r.poster || null};
+  if(r.media_type === "show" || r.media_type === "anime") m.kind = r.media_type;
+  return m;
 }
 function movieToRow(id, bucket, pos){
   const m = getMovie(id); if(!m) return null;
@@ -612,7 +700,7 @@ function movieToRow(id, bucket, pos){
     year: typeof m.year === "number" ? m.year : null,
     genre: m.genre || null, director: m.dir || null,
     poster: m.poster || (c ? c.u : null),
-    bucket, position: pos, score: scoreOf(id),
+    bucket, position: pos, score: scoreOf(id), media_type: typeOf(id),
     note: S.notes[id] || null};
 }
 
@@ -684,7 +772,7 @@ async function reportWatchlistPushFailure(r){
 async function pushWatchlist(){
   const rows = S.watch.map(id => { const m = getMovie(id); const c = cacheEntry(id);
     return m ? {user_id:myId(), movie_id:id, title:m.title, year: typeof m.year==="number"?m.year:null,
-      genre:m.genre||null, director:m.dir||null, poster:m.poster||(c?c.u:null)} : null; }).filter(Boolean);
+      genre:m.genre||null, director:m.dir||null, poster:m.poster||(c?c.u:null), media_type: typeOf(id)} : null; }).filter(Boolean);
   const upsert = await pushTable("watchlist", rows, id => S.watch.includes(id));
   if(upsert && !upsert.ok) await reportWatchlistPushFailure(upsert);
   else if(upsert && upsert.ok) watchlistSyncWarned = false; // recovered: warn again if it breaks later
@@ -1008,9 +1096,13 @@ async function openPerson(id){
   const pr = await sb(pgPath("profiles", {id:pgEq(id), select:"*"}));
   const p = pr.ok ? (await pr.json())[0] : null;
   if(!p){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); return; }
-  const rr = await sb(pgPath("rankings", {user_id:pgEq(id), select:"*", order:"score.desc", limit:50}));
+  const rr = await sb(pgPath("rankings", {user_id:pgEq(id), select:"*", order:"score.desc", limit:500}));
   const rows = rr.ok ? await rr.json() : [];
   rows.forEach(r => { if(!getMovie(r.movie_id)) LIVE[r.movie_id] = rowToMovie(r); });
+  // rows arrive sorted score.desc overall; grouping preserves that order, so
+  // each type's list is already sorted within itself — no re-sort needed
+  const byType = {movie:[], show:[], anime:[]};
+  rows.forEach(r => (byType[r.media_type] || byType.movie).push(r));
   const overlap = rows.filter(r => isRanked(r.movie_id));
   const both = overlap.slice(0, 6);
   const match = overlap.length
@@ -1024,25 +1116,27 @@ async function openPerson(id){
       ${avatarHTML(p.display_name, p.avatar_hue, p.avatar_url, "width:74px;height:74px;font-size:26px")}
       <div class="meta">
         <h2>${esc(p.display_name)}</h2>
-        <div class="d">@${esc(p.handle)} · ${rows.length} movie${rows.length===1?"":"s"} ranked</div>
+        <div class="d">@${esc(p.handle)} · ${rows.length} title${rows.length===1?"":"s"} ranked</div>
         ${p.taste && p.taste.genres && p.taste.genres.length ? `<div class="chips" style="margin-top:8px">${p.taste.genres.slice(0,4).map(g => `<span class="chip" style="padding:4px 9px;font-size:11px">${esc(g)}</span>`).join("")}</div>` : ""}
         <div class="dactions">
           ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
           <button class="pillbtn" id="pshare">Share</button>
         </div>
       </div>
-      ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared movie${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
+      ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared title${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
     </div>
     ${both.length ? `<div class="sechead">You both ranked</div><div class="card" style="padding:6px 14px">
       ${both.map(r => `<div class="bothrow"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</span>
         <span class="score sc ${scoreClass(scoreOf(r.movie_id))}" title="Your score">${scoreOf(r.movie_id).toFixed(1)}</span>
         <span class="score sc ${scoreClass(Number(r.score))}" title="Their score">${Number(r.score).toFixed(1)}</span></div>`).join("")}
       <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>them</span></div></div>` : ""}
-    <div class="sechead">Their top rankings</div>
-    ${rows.length ? `<div class="card">${rows.slice(0, 10).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
-      <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
-      <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
-      ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : `<div class="empty"><p>Nothing ranked yet.</p></div>`}`);
+    ${rows.length ? TYPES.map(t => byType[t].length ? `
+      <div class="sechead">Their top ${TYPE_LABEL[t].toLowerCase()}</div>
+      <div class="card">${byType[t].slice(0, 10).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+        <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
+        <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
+        ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
+      : `<div class="sechead">Their top rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}`);
   hydratePosters(sheet);
 }
 /* follow/unfollow from an open profile sheet. CLOUD.follows is re-read here
@@ -1318,7 +1412,7 @@ function personRowHTML(p){
         ${avatarHTML(p.name, p.hue, p.avatarUrl)}
         <button class="meta" data-person="${esc(p.id)}" style="text-align:left;min-width:0">
         <span class="t">${esc(p.name)} <span style="color:var(--muted);font-weight:500;font-size:12px">@${esc(p.handle)}</span></span>
-        <span class="d">${p.ranked} movie${p.ranked===1?"":"s"} ranked · tap for profile</span></button>
+        <span class="d">${p.ranked} title${p.ranked===1?"":"s"} ranked · tap for profile</span></button>
         <button class="pillbtn ${p.following?"soft":"acc"}" data-pfollow="${esc(p.id)}">${p.following ? "Reelmates ✓" : "Add"}</button>
       </div>`;
 }
@@ -1408,14 +1502,17 @@ function onMateQueryInput(mq){
 }
 
 /* ---------- rankings ---------- */
-let rankFilter = "all", rankGenre = "";
+let rankFilter = "all", rankGenre = "", rankType = "movie";
 function renderRanks(){
-  const ids = allRanked();
+  const tabs = `<div class="segs" role="tablist">
+    ${TYPES.map(t => `<button class="seg ${rankType===t?"cur":""}" data-rtype="${t}">${TYPE_LABEL[t]} (${allRanked(t).length})</button>`).join("")}
+  </div>`;
+  const ids = allRanked(rankType);
   let body;
   if(!ids.length){
     body = `<div class="empty"><div class="big" aria-hidden="true">🎬</div>
-      <p>Nothing ranked yet. Add your first movie and Reeli will build your list one head-to-head at a time.</p>
-      <button class="pillbtn acc" data-gosearch>Rank your first movie</button></div>`;
+      <p>Nothing ranked yet. Add your first ${esc(typeNoun(rankType,1))} and Reeli will build your list one head-to-head at a time.</p>
+      <button class="pillbtn acc" data-gosearch>Rank your first ${esc(typeNoun(rankType,1))}</button></div>`;
   } else {
     const genres = [...new Set(ids.map(getMovie).filter(Boolean).map(m => m.genre).filter(g => g && g !== "—"))].sort();
     if(rankGenre && !genres.includes(rankGenre)) rankGenre = "";
@@ -1446,17 +1543,23 @@ function renderRanks(){
   $("#ranksWrap").innerHTML = `
     <h1 class="h1">Your ranking</h1>
     <p class="sub">Every score is earned by head-to-head matchups — no gut-feel star ratings here.</p>
+    ${tabs}
     ${body}`;
 }
 
-/* ---------- search (built-in library + live worldwide catalog) ---------- */
-let query = "", liveResults = [], liveState = "idle", liveT = null, liveSeq = 0;
+/* ---------- search: three independent sections — Movies, TV Shows, Anime ----------
+   Each section works exactly the same way (trending + live worldwide search)
+   but never mixes results with the others: movies come from Cinemeta's movie
+   catalog, shows from its series catalog, anime from AniList. Which section
+   is open is `searchType`; switching it re-runs trending/search for the new
+   type from scratch. */
+let query = "", searchType = "movie", liveResults = [], liveState = "idle", liveT = null, liveSeq = 0;
 function movieRowHTML(m){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
   return `<div class="row">
     ${posterHTML(m,"p-sm")}
     <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
-      <span class="t">${esc(m.title)}${m.kind === "series" ? '<span class="tvchip">TV</span>' : ""}</span><span class="d">${esc(mline(m))}</span>
+      <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
     </button>
     ${ranked ? scoreHTML(scoreOf(m.id))
       : `<button class="iconbtn ${inWatch?"on":""}" data-watch="${m.id}" aria-label="${inWatch?"Remove from":"Add to"} watchlist" title="Watchlist">
@@ -1464,80 +1567,132 @@ function movieRowHTML(m){
         <button class="pillbtn acc" data-rate="${m.id}">Rank</button>`}
   </div>`;
 }
+function switchSearchType(t){
+  if(t === searchType || !TYPES.includes(t)) return;
+  searchType = t;
+  liveResults = []; liveState = "idle"; liveSeq++;
+  if(query.trim()) runLiveSearch(query.trim());
+  renderSearch();
+}
 function runLiveSearch(q){
-  const seq = ++liveSeq;
+  const seq = ++liveSeq, type = searchType;
   liveState = "loading";
-  // search movies AND series (TV + anime) in parallel, merge when both land
-  let movies = null, shows = null, done = 0;
-  const finish = () => {
-    if(++done < 2 || seq !== liveSeq) return;
-    if(movies === null && shows === null){ liveState = "err"; liveResults = []; }
+  const locals = new Set([...DB, ...S.custom].map(m => normT(m.title)+"|"+m.year));
+  const finish = results => {
+    if(seq !== liveSeq) return;
+    if(results === null){ liveState = "err"; liveResults = []; }
     else {
       liveState = "done";
-      const locals = new Set([...DB, ...S.custom].map(m => normT(m.title)+"|"+m.year));
-      liveResults = [
-        ...(movies || []).slice(0, 16).map(r => cineToMovie(r)),
-        ...(shows || []).slice(0, 10).map(r => cineToMovie(r, "series")),
-      ].filter(m => !locals.has(normT(m.title)+"|"+m.year));
+      liveResults = results.filter(m => !locals.has(normT(m.title)+"|"+m.year));
       liveResults.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     }
-    if(cur === "search") renderSearch();
+    if(cur === "search" && searchType === type) renderSearch();
   };
-  cineSearch(q, r => { movies = r; finish(); });
-  cineSearch(q, r => { shows = r; finish(); }, "series");
+  if(type === "movie") cineSearch(q, r => finish(r ? r.slice(0, 20).map(x => cineToMovie(x)) : null));
+  else if(type === "show") cineSearch(q, r => finish(r ? r.slice(0, 20).map(x => cineToMovie(x, "show")) : null), "series");
+  else anilistSearch(q, finish);
 }
-let TREND = null, TRENDS = null; // movies / series: null, "loading"/"err", or arrays
-function loadTrending(){
-  TREND = "loading"; TRENDS = "loading";
-  getJSON(CINE + "/catalog/movie/top.json", d => {
-    if(!d || !Array.isArray(d.metas)){ TREND = "err"; return; }
-    const locals = new Set(DB.map(m => normT(m.title)+"|"+m.year));
-    TREND = d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year));
-    TREND.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    if(cur === "search" && !query.trim()) renderSearch();
-  });
-  getJSON(CINE + "/catalog/series/top.json", d => {
-    if(!d || !Array.isArray(d.metas)){ TRENDS = "err"; return; }
-    TRENDS = d.metas.slice(0, 8).map(r => cineToMovie(r, "series"));
-    TRENDS.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    if(cur === "search" && !query.trim()) renderSearch();
-  });
+// per type: null (not loaded), "loading", "err", or an array of results
+let TRENDING = { movie: null, show: null, anime: null };
+function loadTrending(type){
+  if(TRENDING[type] !== null) return; // already loaded or in flight
+  TRENDING[type] = "loading";
+  const land = list => {
+    TRENDING[type] = list;
+    if(Array.isArray(list)) list.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
+    // the Shows tab also renders a trending-anime teaser, so anime data
+    // landing while Shows is open is as much a reason to redraw as its own type
+    const showsThisType = type === searchType || (type === "anime" && searchType === "show");
+    if(cur === "search" && !query.trim() && showsThisType) renderSearch();
+  };
+  if(type === "movie"){
+    getJSON(CINE + "/catalog/movie/top.json", d => {
+      if(!d || !Array.isArray(d.metas)) return land("err");
+      const locals = new Set(DB.map(m => normT(m.title)+"|"+m.year));
+      land(d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year)));
+    });
+  } else if(type === "show"){
+    getJSON(CINE + "/catalog/series/top.json", d => {
+      if(!d || !Array.isArray(d.metas)) return land("err");
+      land(d.metas.slice(0, 14).map(r => cineToMovie(r, "show")));
+    });
+  } else {
+    anilistTrending(list => land(list || "err"));
+  }
 }
 function renderSearch(){
   const q = query.trim().toLowerCase();
-  if(!q && TREND === null) loadTrending();
-  const pool = [...DB.map(m => MOVIES[m.id]), ...S.custom];
-  const list = q
-    ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
-    : pool.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 12);
-  const rows = list.map(movieRowHTML).join("");
-  const trendRows = (!q && Array.isArray(TREND))
-    ? TREND.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
-  const showRows = (!q && Array.isArray(TRENDS))
-    ? TRENDS.filter(m => !isRanked(m.id)).slice(0, 6).map(movieRowHTML).join("") : "";
+  loadTrending(searchType);
+  if(searchType === "show") loadTrending("anime"); // the Shows tab also surfaces a trending-anime teaser below its own list
+  const tabs = `<div class="segs" role="tablist">
+    ${TYPES.map(t => `<button class="seg ${searchType===t?"cur":""}" data-stype="${t}">${TYPE_LABEL[t]}</button>`).join("")}
+  </div>`;
+  let body;
+  if(searchType === "movie"){
+    const pool = [...DB.map(m => MOVIES[m.id]), ...S.custom.filter(m => typeOf(m.id) === "movie")];
+    const list = q
+      ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
+      : pool.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 12);
+    const rows = list.map(movieRowHTML).join("");
+    const trend = TRENDING.movie;
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    body = `
+      ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+      ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
+      ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
+  } else {
+    const label = TYPE_LABEL[searchType].toLowerCase();
+    // hand-added shows/anime (the "Add manually" escape hatch below) live only
+    // in S.custom — same local pool the movie tab already searches/browses
+    const customPool = S.custom.filter(m => typeOf(m.id) === searchType);
+    const customList = q
+      ? customPool.filter(m => (m.title+" "+m.genre+" "+m.year).toLowerCase().includes(q))
+      : customPool.filter(m => !isRanked(m.id));
+    const customRows = customList.map(movieRowHTML).join("");
+    const trend = TRENDING[searchType];
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const trendEmpty = !q && !trendRows
+      ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
+        : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
+        : ""
+      : "";
+    // Shows tab only: a "Trending anime" teaser under Trending TV Shows — a
+    // taste of the Anime tab, not a merge of the two. Ranking still only ever
+    // happens against same-type rivals; tapping Rank here routes through the
+    // normal anime pool exactly like ranking from the Anime tab would.
+    let animeTeaser = "";
+    if(searchType === "show" && !q){
+      const at = TRENDING.anime;
+      const atRows = Array.isArray(at) ? at.filter(m => !isRanked(m.id)).slice(0, 5).map(movieRowHTML).join("") : "";
+      animeTeaser = atRows ? `<div class="sechead">Trending anime</div><div class="card">${atRows}</div>` : "";
+    }
+    body = `
+      ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
+      ${animeTeaser}
+      ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
+      ${!q && !trendRows && !customRows && !trendEmpty ? `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>` : ""}`;
+  }
   let liveHTML = "";
   if(q){
     const liveRows = liveResults.map(movieRowHTML).join("");
     liveHTML = `<div class="sechead">Worldwide catalog</div><div class="card">${
       liveState === "loading" ? `<div class="empty" style="padding:22px"><p>Searching the worldwide catalog…</p></div>`
-      : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now — showing the built-in library only.</p></div>`
+      : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
       : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
   }
   $("#searchWrap").innerHTML = `
     <h1 class="h1">Rank anything</h1>
-    <p class="sub">Movies, TV shows, anime — search the whole worldwide catalog.</p>
+    <p class="sub">Movies, TV shows, anime — three separate boards, search the whole worldwide catalog.</p>
+    ${tabs}
     <div class="searchbar">
       <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
-      <input id="q" aria-label="Search movies and shows" type="search" placeholder="Search any movie, show, or anime…" value="${esc(query)}" autocomplete="off">
+      <input id="q" aria-label="Search ${TYPE_LABEL[searchType].toLowerCase()}" type="search" placeholder="Search ${TYPE_LABEL[searchType].toLowerCase()}…" value="${esc(query)}" autocomplete="off">
     </div>
-    ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
-    ${showRows ? `<div class="sechead">Trending shows</div><div class="card">${showRows}</div>` : ""}
-    ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
-    ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}
+    ${body}
     ${liveHTML}
     <div class="sechead">Missing something?</div>
     <div class="card"><div class="row">
-      <span class="meta"><span class="t">Add a movie manually</span><span class="d">Home movies? Festival one-offs? Put them on the board.</span></span>
+      <span class="meta"><span class="t">Add media manually</span><span class="d">${searchType === "movie" ? "Home movies? Festival one-offs?" : searchType === "show" ? "A local series the catalog missed?" : "A title the catalog missed?"} Put it on the board.</span></span>
       <button class="pillbtn soft" data-addcustom>Add</button>
     </div></div>`;
 }
@@ -2133,9 +2288,11 @@ const CLICK_ROUTES = [
   ["notifperson", el => openPerson(el.dataset.notifperson)],
   ["cperson",     el => openPerson(el.dataset.cperson)],
   ["pfollow",     el => toggleMate(el.dataset.pfollow)],
-  ["gosearch",    () => nav("search")],
+  ["gosearch",    () => { if(cur === "ranks") searchType = rankType; nav("search"); }],
   ["addcustom",   () => openCustom()],
   ["ftab",        el => { feedTab = el.dataset.ftab; renderFeed(); }],
+  ["stype",       el => switchSearchType(el.dataset.stype)],
+  ["rtype",       el => { rankType = el.dataset.rtype; rankGenre = ""; renderRanks(); }],
   ["filter",      el => { rankFilter = el.dataset.filter; renderRanks(); }],
   ["gfilter",     el => { rankGenre = rankGenre === el.dataset.gfilter ? "" : el.dataset.gfilter; renderRanks(); }],
   ["acc",         el => { S.ui.accent = el.dataset.acc === "" ? null : +el.dataset.acc; save(); applyUI(); renderProfile(); }],
@@ -2333,7 +2490,7 @@ function openDetail(id){
         <div class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}${m.dir && m.dir !== "—" ? `<br>Directed by ${esc(m.dir)}` : ""}
           ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
         ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
-          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked().length}<br>on your list</div></div>` : ""}
+          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list</div></div>` : ""}
       </div>
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
@@ -2376,10 +2533,10 @@ function detailAction(a){
 /* ---------- custom add ---------- */
 function openCustom(){
   openSheet(`
-    <h1 class="h1">Add a movie</h1>
+    <h1 class="h1">Add media</h1>
     <p class="sub">It joins your personal database and is ready to rank.</p>
     <div style="display:grid;gap:10px">
-      <input id="ctitle" aria-label="Movie title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <input id="ctitle" aria-label="Title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
       <input id="cyear" aria-label="Year" placeholder="Year" inputmode="numeric" maxlength="4" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
       <input id="cgenre" aria-label="Genre (optional)" placeholder="Genre (optional)" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
       <div style="display:flex;gap:9px;margin-top:4px">
@@ -2393,6 +2550,7 @@ function saveCustomMovie(){
   if(!t){ $("#ctitle").focus(); return; }
   const y = parseInt($("#cyear").value,10);
   const m = {id:"c_"+Date.now(), title:t, year:(y>=1888 && y<=2030)?y:"—", genre:$("#cgenre").value.trim()||"Film", dir:"—", hue:hueFromTitle(t)};
+  if(searchType === "show" || searchType === "anime") m.kind = searchType;
   S.custom.push(m); save();
   startRate(m.id);
 }
@@ -2425,16 +2583,21 @@ function startRate(id){
         <span><b>Not for me</b><span>Two hours you want back</span></span></button>
     </div>`);
 }
+/* the movies R.id competes against: only ever its own pool (movie/show/anime)
+   within the chosen bucket — a movie is never matched up against a show */
+function rivals(){ return rankedIndex(R.type).arrs[R.bucket]; }
 function pickBucket(bucket){
   removeRanking(R.id); // re-rank support
   R.bucket = bucket;
-  Object.assign(R, rankInit(S[bucket].length));
+  R.type = typeOf(R.id);
+  Object.assign(R, rankInit(rivals().length));
   stepCompare();
 }
 /* one turn of the crank: ask ranking.js what comes next, then either place the
    movie or render the matchup it asked for */
 function stepCompare(){
-  const step = rankStep(R, i => getMovie(S[R.bucket][i]));
+  const arr = rivals();
+  const step = rankStep(R, i => getMovie(arr[i]));
   if(step.type === "place"){ placeAt(step.index); return; }
   R.mid = step.mid; // the delegated [data-pick] handler reads this back
   renderMatchup(step);
@@ -2442,12 +2605,13 @@ function stepCompare(){
 /* the head-to-head sheet — presentation only; the answer goes straight back to
    ranking.js via rankChoose (see the delegated [data-pick] route) */
 function renderMatchup(step){
-  const a = getMovie(R.id), b = getMovie(S[R.bucket][step.mid]);
-  const total = S[R.bucket].length;
+  const arr = rivals();
+  const a = getMovie(R.id), b = getMovie(arr[step.mid]);
+  const total = arr.length;
   const left = step.remaining;
   const feel = R.bucket === "loved" ? "loved" : R.bucket === "fine" ? "found fine" : "didn't like";
   openSheet(`
-    <div class="step">Matchup ${step.n} · ${left ? "about " + left + " more after this" : "last one"} · ${total} ${total===1?"movie":"movies"} you ${feel}</div>
+    <div class="step">Matchup ${step.n} · ${left ? "about " + left + " more after this" : "last one"} · ${total} ${typeNoun(R.type, total)} you ${feel}</div>
     <h1 class="h1" style="text-align:center;margin-top:14px">Which did you like more?</h1>
     <div class="faceoff">
       <button class="contender" data-pick="new">${posterHTML(a,"p-md")}<span class="t">${esc(a.title)}</span><span class="d">${a.year}</span></button>
@@ -2463,10 +2627,17 @@ function answerMatchup(choice){
   const verdict = rankChoose(R, R.mid, choice);
   if(verdict) placeAt(verdict.index); else stepCompare();
 }
+/* idx is a position within rivals() (same-type items only) — translate it to
+   the real splice index in the full, mixed-type S[bucket] array */
+function realSpliceIndex(idx){
+  const arr = S[R.bucket], typed = rivals();
+  if(idx >= typed.length) return typed.length ? arr.lastIndexOf(typed[typed.length - 1]) + 1 : arr.length;
+  return arr.indexOf(typed[idx]);
+}
 function placeAt(idx){
   ensureSaved(R.id);
   SYNC_TOUCH = R.id;
-  S[R.bucket].splice(idx, 0, R.id);
+  S[R.bucket].splice(realSpliceIndex(idx), 0, R.id);
   S.watch = S.watch.filter(x => x !== R.id);
   const m = getMovie(R.id), sc = scoreOf(R.id), rk = rankOf(R.id);
   // store a real timestamp; the feed renders it relative ("2h", "yesterday")
@@ -2481,7 +2652,7 @@ function placeAt(idx){
       ${posterHTML(m,"p-lg")}
       <h2>${esc(m.title)}</h2>
       ${scoreHTML(sc,"bigscore")}
-      <p>Locked in at <b>#${rk}</b> of ${allRanked().length} on your list.<br>Scores shift as your ranking grows — that's the fun part.</p>
+      <p>Locked in at <b>#${rk}</b> of ${allRanked(R.type).length} on your list.<br>Scores shift as your ranking grows — that's the fun part.</p>
       <input class="field" id="takeInp" aria-label="Your hot take about this movie (optional)" placeholder="Add a hot take (optional) — your Reelmates will see it" maxlength="280" style="width:100%">
       <div style="display:flex;gap:9px;margin-top:6px;flex-wrap:wrap;justify-content:center">
         ${lbRemaining() ? `<button class="pillbtn acc" id="lbNext">Next import (${lbRemaining()} left)</button>` : `<button class="pillbtn acc" id="doneBtn">See my ranking</button>`}
