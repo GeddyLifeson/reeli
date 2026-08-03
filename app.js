@@ -200,8 +200,6 @@ function typeNoun(type, n){
   if(type === "show") return n === 1 ? "show" : "shows";
   return n === 1 ? "movie" : "movies";
 }
-/* "a movie" / "a show" / "an anime" */
-function typeNounA(type){ return (type === "anime" ? "an " : "a ") + typeNoun(type, 1); }
 
 /* Memoized index over the three bucket arrays, optionally narrowed to one
    media type.
@@ -1602,7 +1600,10 @@ function loadTrending(type){
   const land = list => {
     TRENDING[type] = list;
     if(Array.isArray(list)) list.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    if(cur === "search" && !query.trim() && searchType === type) renderSearch();
+    // the Shows tab also renders a trending-anime teaser, so anime data
+    // landing while Shows is open is as much a reason to redraw as its own type
+    const showsThisType = type === searchType || (type === "anime" && searchType === "show");
+    if(cur === "search" && !query.trim() && showsThisType) renderSearch();
   };
   if(type === "movie"){
     getJSON(CINE + "/catalog/movie/top.json", d => {
@@ -1622,6 +1623,7 @@ function loadTrending(type){
 function renderSearch(){
   const q = query.trim().toLowerCase();
   loadTrending(searchType);
+  if(searchType === "show") loadTrending("anime"); // the Shows tab also surfaces a trending-anime teaser below its own list
   const tabs = `<div class="segs" role="tablist">
     ${TYPES.map(t => `<button class="seg ${searchType===t?"cur":""}" data-stype="${t}">${TYPE_LABEL[t]}</button>`).join("")}
   </div>`;
@@ -1654,8 +1656,19 @@ function renderSearch(){
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
         : ""
       : "";
+    // Shows tab only: a "Trending anime" teaser under Trending TV Shows — a
+    // taste of the Anime tab, not a merge of the two. Ranking still only ever
+    // happens against same-type rivals; tapping Rank here routes through the
+    // normal anime pool exactly like ranking from the Anime tab would.
+    let animeTeaser = "";
+    if(searchType === "show" && !q){
+      const at = TRENDING.anime;
+      const atRows = Array.isArray(at) ? at.filter(m => !isRanked(m.id)).slice(0, 5).map(movieRowHTML).join("") : "";
+      animeTeaser = atRows ? `<div class="sechead">Trending anime</div><div class="card">${atRows}</div>` : "";
+    }
     body = `
       ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
+      ${animeTeaser}
       ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
       ${!q && !trendRows && !customRows && !trendEmpty ? `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>` : ""}`;
   }
@@ -1679,7 +1692,7 @@ function renderSearch(){
     ${liveHTML}
     <div class="sechead">Missing something?</div>
     <div class="card"><div class="row">
-      <span class="meta"><span class="t">Add ${esc(typeNounA(searchType))} manually</span><span class="d">${searchType === "movie" ? "Home movies? Festival one-offs?" : searchType === "show" ? "A local series the catalog missed?" : "A title the catalog missed?"} Put it on the board.</span></span>
+      <span class="meta"><span class="t">Add media manually</span><span class="d">${searchType === "movie" ? "Home movies? Festival one-offs?" : searchType === "show" ? "A local series the catalog missed?" : "A title the catalog missed?"} Put it on the board.</span></span>
       <button class="pillbtn soft" data-addcustom>Add</button>
     </div></div>`;
 }
@@ -2520,7 +2533,7 @@ function detailAction(a){
 /* ---------- custom add ---------- */
 function openCustom(){
   openSheet(`
-    <h1 class="h1">Add ${esc(typeNounA(searchType))}</h1>
+    <h1 class="h1">Add media</h1>
     <p class="sub">It joins your personal database and is ready to rank.</p>
     <div style="display:grid;gap:10px">
       <input id="ctitle" aria-label="Title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
