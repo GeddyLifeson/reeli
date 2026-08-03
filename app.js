@@ -1859,14 +1859,19 @@ function profileGenresHTML(d){
   return `<div class="sechead">Most-ranked genres</div>
       <div class="chips">${d.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>`;
 }
-function profilePodiumHTML(d){
-  if(!d.ids.length) return "";
+/* one podium per media type — a movie's #1 never crowds out a show's or an
+   anime's, same split as everywhere else in the app */
+function profilePodiumHTML(){
   const medals = ["🥇","🥈","🥉"];
-  return `<div class="sechead">Podium</div><div class="card">${
-      d.ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
-        <span class="rankno">${medals[i]}</span>${posterHTML(m,"p-sm")}
-        <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
-        ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
+  return TYPES.map(t => {
+    const ids = allRanked(t);
+    if(!ids.length) return "";
+    return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
+        ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+          <span class="rankno">${medals[i]}</span>${posterHTML(m,"p-sm")}
+          <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+          ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
+  }).join("");
 }
 function profileActionsHTML(d){
   return `<div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
@@ -1887,7 +1892,7 @@ function profileHTML(d){
     ${profileCustomizeHTML()}
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
-    ${profilePodiumHTML(d)}
+    ${profilePodiumHTML()}
     ${profileActionsHTML(d)}
     <button class="danger" id="resetBtn">Reset all my data</button>
     <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
