@@ -110,6 +110,7 @@ export function makeSeed(i, DB){
       taste: r() < .6 ? {genres: [pick(["Drama", "Sci-Fi", pick(NASTY)])], dirs: r() < .5 ? [pick(["Wes Anderson", pick(NASTY)])] : []} : null,
       loved, fine, disliked, watch, custom,
       likes: {me0: r() < .5, me1: r() < .5},
+      dislikes: {me2: r() < .3},
       notes, myFeed, feedSeen: "", notifSeen: "",
       /* also index-derived, for the same reason as `legacy` above */
       lbQueue: i % 4 === 1 ? all.slice(0, i % 3) : [],
@@ -121,6 +122,7 @@ export function makeSeed(i, DB){
       profileLoaded: authed && r() < .8,
       follows: people.filter(() => r() < .5).map(p => p.id),
       feed, myLikes: feed.filter(() => r() < .5).map(f => f.userId + "|" + f.movie),
+      myDislikes: feed.filter(() => r() < .2).map(f => f.userId + "|" + f.movie),
       feedLoaded: r() < .5, notifs: [],
     },
     posters: Object.fromEntries(all.filter(() => r() < .4).map(id => [id, r() < .5 ? "https://p/" + id + "?a=1&b=2" : {u: "https://p/" + id, tt: "tt" + (1000000 + Math.floor(r() * 9e6))}])),
@@ -154,6 +156,7 @@ export function apply(B, seed){
   C.follows = new Set(seed.CLOUD.follows);
   C.feed = JSON.parse(JSON.stringify(seed.CLOUD.feed));
   C.myLikes = new Set(seed.CLOUD.myLikes);
+  C.myDislikes = new Set(seed.CLOUD.myDislikes);
   C.feedLoaded = seed.CLOUD.feedLoaded;
   C.notifs = [];
   for(const k of Object.keys(T.LIVE)) delete T.LIVE[k];

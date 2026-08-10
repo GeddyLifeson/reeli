@@ -104,3 +104,23 @@ create policy "users like as themselves"
   on public.likes for insert with check ((select auth.uid()) = user_id);
 create policy "users unlike as themselves"
   on public.likes for delete using ((select auth.uid()) = user_id);
+
+-- ============ dislikes: a private "not for me" toggle, not a second public
+-- tally — unlike likes, only the person who dislikes something can see that
+-- they did, so no count is ever shown or computable by anyone else ============
+create table public.dislikes (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  ranking_user uuid not null,
+  ranking_movie text not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, ranking_user, ranking_movie),
+  foreign key (ranking_user, ranking_movie)
+    references public.rankings(user_id, movie_id) on delete cascade
+);
+alter table public.dislikes enable row level security;
+create policy "dislikes readable by the person who made them"
+  on public.dislikes for select using ((select auth.uid()) = user_id);
+create policy "users dislike as themselves"
+  on public.dislikes for insert with check ((select auth.uid()) = user_id);
+create policy "users un-dislike as themselves"
+  on public.dislikes for delete using ((select auth.uid()) = user_id);

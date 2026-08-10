@@ -108,6 +108,7 @@ function seed(){
     watch:[],
     custom:[],
     likes:{},
+    dislikes:{},
     notes:{},
     myFeed:[],
     feedSeen:"",
@@ -127,6 +128,7 @@ function load(){
         if(!("taste" in s)) s.taste = null;
         if(!("guestChosen" in s)) s.guestChosen = false;
         if(!s.notes) s.notes = {};
+        if(!s.dislikes) s.dislikes = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
@@ -622,7 +624,7 @@ fetch(SUPA_URL + pgPath("profiles", {select:"avatar_url", limit:1}),
   .catch(e => logErr("avatar_url column probe", e));
 let AUTH = null;
 try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){ logErr("reading the saved session", e); }
-const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), notifs:[] };
+const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), myDislikes:new Set(), notifs:[] };
 function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){ logErr("saving the session", e); } }
 function authed(){ return !!(AUTH && AUTH.access_token); }
 function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
@@ -884,6 +886,13 @@ async function pullLikes(){
   const lk = await sb(pgPath("likes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
   CLOUD.myLikes = lk.ok ? new Set((await lk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
 }
+/* dislikes are a private "not for me" signal, not a public tally — no count is
+   ever shown, and unlike likes they don't feed the feed or the hot-takes sort.
+   The table only exists so the toggle survives a reload/another device. */
+async function pullDislikes(){
+  const dk = await sb(pgPath("dislikes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
+  CLOUD.myDislikes = dk.ok ? new Set((await dk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
+}
 async function pullCloud(){
   if(!authed()) return;
   PULLING = true;
@@ -897,6 +906,7 @@ async function pullCloud(){
     step = "rankings";  await pullRankings();
     step = "watchlist"; await pullWatchlist();
     step = "likes";     await pullLikes();
+    step = "dislikes";  await pullDislikes();
     save();
   }catch(e){ logErr("pullCloud/" + step, e); }
   PULLING = false;
@@ -1043,10 +1053,31 @@ async function toggleCloudLike(userId, movieId, btn){
       ranking_movie:pgEq(movieId)}), {method:"DELETE"});
   } else {
     CLOUD.myLikes.add(key);
+    if(CLOUD.myDislikes.has(key)) await toggleCloudDislike(userId, movieId); // liking clears a prior dislike
     await sb(pgPath("likes"), {method:"POST",
       body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
   }
   refreshCloudFeed();
+}
+/* dislike mirrors like exactly, except there's no count anywhere to refresh —
+   it's a private "not for me" toggle, not a second public tally. Liking and
+   disliking the same ranking are mutually exclusive, same as most apps that
+   ship both: each one clears the other first. */
+async function toggleCloudDislike(userId, movieId){
+  if(!authed()){ toast("Sign in to react to rankings"); openAuthSheet("login"); return; }
+  const key = userId + "|" + movieId;
+  const disliked = CLOUD.myDislikes.has(key);
+  if(disliked){
+    CLOUD.myDislikes.delete(key);
+    await sb(pgPath("dislikes", {user_id:pgEq(myId()), ranking_user:pgEq(userId),
+      ranking_movie:pgEq(movieId)}), {method:"DELETE"});
+  } else {
+    CLOUD.myDislikes.add(key);
+    if(CLOUD.myLikes.has(key)) await toggleCloudLike(userId, movieId); // disliking clears a prior like
+    await sb(pgPath("dislikes"), {method:"POST",
+      body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
+  }
+  if(cur === "feed") renderFeed(); // no count involved, just the pressed state
 }
 
 /* ---- community scores on a movie: everyone's average + your Reelmates' takes ---- */
@@ -1324,7 +1355,7 @@ function pickHue(el, attr){
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){ logErr("server-side logout (signing out locally anyway)", e); }
   saveAuth(null);
-  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.notifs = [];
+  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.myDislikes = new Set(); CLOUD.notifs = [];
   setNotifBadge(0);
   S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
   showGate();
@@ -1343,18 +1374,23 @@ function feedItemData(f, idx){
        attr: `data-clike="${esc(f.userId)}|${esc(f.movie)}"`}
     : (() => { const key = "me" + idx, liked = !!S.likes[key];
         return {liked, n: (f.likes||0) + (liked?1:0), attr: `data-like="${key}"`}; })();
+  // dislikes never carry a count (n) — it's a private "not for me" toggle,
+  // not a second public tally, so there's nothing to add to what the server sent
+  const dislike = f.cloud
+    ? {disliked: CLOUD.myDislikes.has(f.userId + "|" + f.movie), attr: `data-cdislike="${esc(f.userId)}|${esc(f.movie)}"`}
+    : (() => { const key = "me" + idx; return {disliked: !!S.dislikes[key], attr: `data-dislike="${key}"`}; })();
   // local items now carry a real ts; render it relative. Fall back to any
   // legacy `time` string, then to "recently" for pre-fix entries.
   const localTime = f.ts ? relTime(f.ts) : (f.time || "recently");
   const sub = f.cloud
     ? `${esc(f.time)} · @${esc(f.handle || "")}`
     : `${esc(localTime)}${f.rank ? ` · #${f.rank} on your list` : ""}`;
-  return {f, m, who, like, sub, cloud: !!f.cloud};
+  return {f, m, who, like, dislike, sub, cloud: !!f.cloud};
 }
 function feedItemHTML(f, idx){
   const d = feedItemData(f, idx);
   if(!d) return "";
-  const {m, who, like} = d;
+  const {m, who, like, dislike} = d;
   const headInner = `
       ${avatarHTML(who.name, who.hue, who.url)}
       <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${d.sub}</span></div>
@@ -1373,6 +1409,8 @@ function feedItemHTML(f, idx){
       <button ${like.attr} class="${like.liked?"liked":""}" aria-pressed="${like.liked}" aria-label="${like.liked ? "Unlike" : "Like"} ${esc(m.title)}, ${like.n} ${like.n === 1 ? "like" : "likes"}">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="${like.liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
         ${like.n}</button>
+      <button ${dislike.attr} class="${dislike.disliked?"disliked":""}" aria-pressed="${dislike.disliked}" aria-label="${dislike.disliked ? "Remove dislike from" : "Dislike"} ${esc(m.title)}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="${dislike.disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
       <button data-open="${m.id}">${isRanked(m.id) ? "Ranked ✓" : "Rank it too"}</button>
     </div>
   </article>`;
@@ -2097,6 +2135,12 @@ function removeFromWatch(id){
 }
 function toggleLocalLike(k){
   S.likes[k] = !S.likes[k]; if(!S.likes[k]) delete S.likes[k];
+  if(S.likes[k]) delete S.dislikes[k]; // liking clears a prior dislike
+  save(); renderFeed();
+}
+function toggleLocalDislike(k){
+  S.dislikes[k] = !S.dislikes[k]; if(!S.dislikes[k]) delete S.dislikes[k];
+  if(S.dislikes[k]) delete S.likes[k]; // disliking clears a prior like
   save(); renderFeed();
 }
 
@@ -2288,6 +2332,8 @@ const CLICK_ROUTES = [
   ["unwatch",     el => removeFromWatch(el.dataset.unwatch)],
   ["like",        el => toggleLocalLike(el.dataset.like)],
   ["clike",       el => { const [u, mv] = el.dataset.clike.split("|"); toggleCloudLike(u, mv, el); }],
+  ["dislike",     el => toggleLocalDislike(el.dataset.dislike)],
+  ["cdislike",    el => { const [u, mv] = el.dataset.cdislike.split("|"); toggleCloudDislike(u, mv); }],
   ["person",      el => openPerson(el.dataset.person)],
   ["notif",       el => openDetail(el.dataset.notif)],
   ["notifperson", el => openPerson(el.dataset.notifperson)],

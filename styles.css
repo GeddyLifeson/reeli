@@ -190,6 +190,7 @@
   .facts{display:flex;gap:14px;margin-top:10px}
   .facts button{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;font-weight:600}
   .facts button.liked{color:var(--bad)}
+  .facts button.disliked{color:var(--ink)}
 
   /* profile */
   .phead{display:flex;align-items:center;gap:14px;margin-bottom:16px}

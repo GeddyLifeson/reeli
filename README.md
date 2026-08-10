@@ -104,3 +104,4 @@ Run these in the Supabase SQL editor, in a fresh tab each:
 | `supabase-customize.sql` | to enable avatar uploads and saved UI settings |
 | `supabase-rls-watchlist-fix.sql` | **required** — without it the watchlist stops syncing after the first save |
 | `supabase-media-type.sql` | **required on existing projects** — adds the `media_type` column that splits rankings into movies / shows / anime |
+| `supabase-dislikes.sql` | **required on existing projects** — adds the `dislikes` table |
