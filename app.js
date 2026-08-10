@@ -1600,10 +1600,7 @@ function loadTrending(type){
   const land = list => {
     TRENDING[type] = list;
     if(Array.isArray(list)) list.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    // the Shows tab also renders a trending-anime teaser, so anime data
-    // landing while Shows is open is as much a reason to redraw as its own type
-    const showsThisType = type === searchType || (type === "anime" && searchType === "show");
-    if(cur === "search" && !query.trim() && showsThisType) renderSearch();
+    if(cur === "search" && !query.trim() && type === searchType) renderSearch();
   };
   if(type === "movie"){
     getJSON(CINE + "/catalog/movie/top.json", d => {
@@ -1623,7 +1620,6 @@ function loadTrending(type){
 function renderSearch(){
   const q = query.trim().toLowerCase();
   loadTrending(searchType);
-  if(searchType === "show") loadTrending("anime"); // the Shows tab also surfaces a trending-anime teaser below its own list
   const tabs = `<div class="segs" role="tablist">
     ${TYPES.map(t => `<button class="seg ${searchType===t?"cur":""}" data-stype="${t}">${TYPE_LABEL[t]}</button>`).join("")}
   </div>`;
@@ -1656,19 +1652,16 @@ function renderSearch(){
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
         : ""
       : "";
-    // Shows tab only: a "Trending anime" teaser under Trending TV Shows — a
-    // taste of the Anime tab, not a merge of the two. Ranking still only ever
-    // happens against same-type rivals; tapping Rank here routes through the
-    // normal anime pool exactly like ranking from the Anime tab would.
-    let animeTeaser = "";
-    if(searchType === "show" && !q){
-      const at = TRENDING.anime;
-      const atRows = Array.isArray(at) ? at.filter(m => !isRanked(m.id)).slice(0, 5).map(movieRowHTML).join("") : "";
-      animeTeaser = atRows ? `<div class="sechead">Trending anime</div><div class="card">${atRows}</div>` : "";
-    }
+    // No local DB-equivalent catalog for shows/anime, so "Recommended" reuses
+    // the same trending array — re-sorted by taste match instead of plain
+    // trending order. The pool is capped at ~10-14 items, so some overlap
+    // with the Trending section above is an acceptable simplification.
+    const recRows = (!q && Array.isArray(trend))
+      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map(movieRowHTML).join("")
+      : "";
     body = `
       ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
-      ${animeTeaser}
+      ${recRows ? `<div class="sechead">${S.taste ? `Recommended ${label}` : "Suggestions for you"}</div><div class="card">${recRows}</div>` : ""}
       ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
       ${!q && !trendRows && !customRows && !trendEmpty ? `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>` : ""}`;
   }
