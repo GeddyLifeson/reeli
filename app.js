@@ -1051,11 +1051,13 @@ async function toggleCloudLike(userId, movieId, btn){
     CLOUD.myLikes.delete(key);
     await sb(pgPath("likes", {user_id:pgEq(myId()), ranking_user:pgEq(userId),
       ranking_movie:pgEq(movieId)}), {method:"DELETE"});
+    bumpTakeLike(userId, movieId, -1);
   } else {
     CLOUD.myLikes.add(key);
     if(CLOUD.myDislikes.has(key)) await toggleCloudDislike(userId, movieId); // liking clears a prior dislike
     await sb(pgPath("likes"), {method:"POST",
       body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
+    bumpTakeLike(userId, movieId, 1);
   }
   refreshCloudFeed();
 }
@@ -1078,13 +1080,14 @@ async function toggleCloudDislike(userId, movieId){
       body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
   }
   if(cur === "feed") renderFeed(); // no count involved, just the pressed state
+  bumpTakeLike(userId, movieId, 0); // ditto for a take's pressed state, if one's showing
 }
 
 /* ---- community scores on a movie: everyone's average + your Reelmates' takes ---- */
 async function loadCommunityScores(movieId){
   try{
     const r = await sb(pgPath("rankings", {movie_id:pgEq(movieId),
-      select:"score,note,user_id,profiles!rankings_user_id_fkey(" + PSEL + ")", limit:200}));
+      select:"score,note,user_id,updated_at,profiles!rankings_user_id_fkey(" + PSEL + ")", limit:200}));
     if(!r.ok) return;
     const all = await r.json();
     const others = all.filter(x => x.user_id !== myId());
@@ -1099,22 +1102,97 @@ async function loadCommunityScores(movieId){
       ["fine", all.filter(x => Number(x.score) >= 3.4 && Number(x.score) < 6.7).length],
       ["not for them", all.filter(x => Number(x.score) < 3.4).length],
     ].filter(b => b[1] > 0).map(b => `${b[1]} ${b[0]}`).join(" · ");
-    const mates = others.filter(x => CLOUD.follows.has(x.user_id));
-    wrap.innerHTML = `
+    const avgHTML = `
       <div class="sechead">On Reeli</div>
       <div class="card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
         ${scoreHTML(Math.round(avg*10)/10)}
         <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.45">
           Average of ${all.length} ranking${all.length===1?"":"s"}${mineIncluded ? " (including yours)" : ""}<br>${esc(bands)}</span>
-      </div>
-      ${mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
+      </div>`;
+    if(isRanked(movieId)){
+      // already rated it yourself: no more need to browse for opinions before
+      // committing, so the quick trusted-circle glance is enough
+      TAKES_CACHE = null;
+      const mates = others.filter(x => CLOUD.follows.has(x.user_id));
+      wrap.innerHTML = avgHTML + (mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
         <button class="row" data-cperson="${esc(x.user_id)}">
           ${avatarHTML(x.profiles.display_name, x.profiles.avatar_hue, x.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}
           <span class="meta"><span class="t" style="font-size:13px">${esc(x.profiles.display_name)}</span>
           ${x.note ? `<span class="d" style="white-space:normal">“${esc(x.note)}”</span>` : ""}</span>
           ${scoreHTML(Number(x.score))}
-        </button>`).join("")}</div>` : ""}`;
+        </button>`).join("")}</div>` : "");
+      return;
+    }
+    // haven't rated it yet: this is the moment hot takes earn their keep —
+    // everyone's take, not just Reelmates', so there's something to go on
+    // before committing to rank it yourself
+    const takers = others.filter(x => x.note);
+    const lk = await sb(pgPath("likes", {ranking_movie:pgEq(movieId), select:"ranking_user"}));
+    const likeCounts = new Map();
+    if(lk.ok) (await lk.json()).forEach(x => likeCounts.set(x.ranking_user, (likeCounts.get(x.ranking_user)||0) + 1));
+    if(document.getElementById("commWrap") !== wrap || detailId !== movieId) return; // sheet moved on during that second fetch
+    TAKES_CACHE = {movieId, rows: takers.map(x => ({...x, likeCount: likeCounts.get(x.user_id) || 0}))};
+    wrap.innerHTML = avgHTML + `<div id="takesInner">${takesSectionHTML()}</div>`;
   }catch(e){ logErr("loading community scores", e); }
+}
+
+/* ---- hot takes: everyone's note on a title you haven't rated yet, sorted
+   Hot (recent-like velocity — a small HN-style decay, not just a raw total,
+   so "hot" doesn't just mean "oldest and most-seen forever"), New, or Most
+   liked. Likes/dislikes on a take ARE likes/dislikes on that ranking — same
+   data-clike/data-cdislike attributes and toggle functions the feed uses,
+   just pointed at a different (user, movie) pair. */
+let takesSort = "hot", TAKES_CACHE = null;
+function takeHotScore(t){
+  const hrs = Math.max(0, (Date.now() - new Date(t.updated_at).getTime()) / 36e5);
+  return t.likeCount / Math.pow(hrs + 2, 1.5);
+}
+function takesSectionHTML(){
+  if(!TAKES_CACHE) return "";
+  const rows = TAKES_CACHE.rows.slice().sort((a, b) =>
+    takesSort === "new" ? new Date(b.updated_at) - new Date(a.updated_at)
+    : takesSort === "most" ? b.likeCount - a.likeCount
+    : takeHotScore(b) - takeHotScore(a));
+  return `
+    <div class="sechead">Hot takes</div>
+    <div class="segs" role="tablist" style="margin-bottom:10px">
+      ${[["hot","Hot"],["new","New"],["most","Most liked"]].map(([k,l]) =>
+        `<button class="seg ${takesSort===k?"cur":""}" data-tsort="${k}">${l}</button>`).join("")}
+    </div>
+    ${rows.length ? `<div class="card">${rows.map(t => {
+      const key = t.user_id + "|" + TAKES_CACHE.movieId;
+      const liked = CLOUD.myLikes.has(key), disliked = CLOUD.myDislikes.has(key);
+      return `<div class="row" style="align-items:flex-start">
+        <button data-person="${esc(t.user_id)}" style="padding:0;flex:none;border-radius:50%">
+          ${avatarHTML(t.profiles.display_name, t.profiles.avatar_hue, t.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}</button>
+        <span class="meta">
+          <span class="t" style="font-size:13px">${esc(t.profiles.display_name)}</span>
+          <span class="d" style="white-space:normal">“${esc(t.note)}”</span>
+          <span class="facts" style="margin-top:6px">
+            <button data-clike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${liked?"liked":""}" aria-pressed="${liked}" aria-label="${liked?"Unlike":"Like"} ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg></button>
+            <button data-cdislike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${disliked?"disliked":""}" aria-pressed="${disliked}" aria-label="${disliked?"Remove dislike from":"Dislike"} ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="${disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
+          </span>
+        </span>
+        ${scoreHTML(Number(t.score))}
+      </div>`;
+    }).join("")}</div>` : `<div class="empty"><p>No hot takes yet — be the first to rank it and leave one.</p></div>`}`;
+}
+function resortTakes(sort){
+  takesSort = sort;
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
+}
+/* optimistic local update so a like/dislike on a take re-sorts "Hot"/"Most
+   liked" immediately, without a network round trip just to redraw a count
+   nothing server-side needed to change to know */
+function bumpTakeLike(userId, movieId, delta){
+  if(!TAKES_CACHE || TAKES_CACHE.movieId !== movieId) return;
+  const row = TAKES_CACHE.rows.find(t => t.user_id === userId);
+  if(row) row.likeCount = Math.max(0, row.likeCount + delta);
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
 }
 
 /* ---- public profile sheet: tap any person to see their list ---- */
@@ -1188,6 +1266,42 @@ async function openPerson(id){
    paints the *viewed person's* wallpaper via an inline style scoped to this
    view only — applyUI()/S.ui must never be touched here, that's the
    signed-in user's own wallpaper. */
+/* Turns someone else's fetched rows into the same shape profileData() computes
+   for your own — average, taste breakdown, top genres — so the full-profile
+   view can reuse the exact section markup your own Profile tab uses, just
+   fed from their rows instead of reading module-level S. (Their watchlist
+   count has no equivalent here: RLS makes public.watchlist readable only by
+   its owner, so "Queued" isn't something a visitor can ever know.) */
+function personProfileSummary(rows){
+  const scores = rows.map(r => Number(r.score));
+  const gc = {};
+  rows.forEach(r => { if(r.genre) gc[r.genre] = (gc[r.genre]||0) + 1; });
+  const loved = rows.filter(r => r.bucket === "loved").length;
+  const fine = rows.filter(r => r.bucket === "fine").length;
+  const disliked = rows.filter(r => r.bucket === "disliked").length;
+  return {
+    n: rows.length,
+    avg: scores.length ? (scores.reduce((a,b) => a+b, 0) / scores.length).toFixed(1) : "—",
+    topGenres: Object.entries(gc).sort((a,b) => b[1]-a[1]).slice(0, 5),
+    dist: [["Loved", loved, "var(--good)"], ["Fine", fine, "var(--mid)"], ["Not for me", disliked, "var(--bad)"]],
+    distN: rows.length || 1,
+    loved,
+  };
+}
+/* same "one podium per type" idea as profilePodiumHTML(), fed from someone
+   else's byType grouping instead of your own allRanked(t) */
+function personPodiumHTML(byType){
+  const medals = ["🥇","🥈","🥉"];
+  return TYPES.map(t => {
+    const rows = byType[t];
+    if(!rows.length) return "";
+    return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
+        rows.slice(0, 3).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+          <span class="rankno">${medals[i]}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
+          <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
+          ${scoreHTML(Number(r.score))}</button>`).join("")}</div>`;
+  }).join("");
+}
 async function openFullProfile(){
   if(!SHEET_PERSON) return;
   const id = SHEET_PERSON.id;
@@ -1197,28 +1311,44 @@ async function openFullProfile(){
   if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); sheet.classList.add("full"); return; }
   const {p, rows, byType} = data;
   SHEET_PERSON = {id, handle: p.handle, name: p.display_name};
+  const sm = personProfileSummary(rows);
   const wallStyle = p.ui && p.ui.wall
     ? ` style="background-image:linear-gradient(var(--wallshade),var(--wallshade)),url('https://images.metahub.space/background/medium/${esc(p.ui.wall)}/img')"`
     : "";
+  const following = CLOUD.follows.has(id), isMe = id === myId();
   openSheet(`
     <div class="fullprofile"${wallStyle}>
       <div class="fullhead">
         <button class="pillbtn soft" id="pfullClose" aria-label="Close full profile">✕ Close</button>
       </div>
-      <div class="dhead">
-        ${avatarHTML(p.display_name, p.avatar_hue, p.avatar_url, "width:74px;height:74px;font-size:26px")}
-        <div class="meta">
-          <h2>${esc(p.display_name)}</h2>
-          <div class="d">@${esc(p.handle)} · ${rows.length} title${rows.length===1?"":"s"} ranked</div>
-        </div>
+      <div class="phead">
+        ${avatarHTML(p.display_name, p.avatar_hue, p.avatar_url)}
+        <div style="flex:1;min-width:0"><div class="pname">${esc(p.display_name)}</div>
+          <div class="phandle">@${esc(p.handle)}</div></div>
       </div>
-      ${rows.length ? TYPES.map(t => byType[t].length ? `
-        <div class="sechead">${TYPE_LABEL[t]}</div>
-        <div class="card">${byType[t].slice(0, 30).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
-          <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
-          <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
-          ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
-        : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
+      <div class="dactions" style="margin:10px 0 14px">
+        ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+        <button class="pillbtn" id="pshare">Share</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n">${sm.n}</div><div class="l">Ranked</div></div>
+        <div class="stat"><div class="n">${sm.loved}</div><div class="l">Loved</div></div>
+        <div class="stat"><div class="n">${sm.avg}</div><div class="l">Avg</div></div>
+      </div>
+      ${p.taste && (p.taste.genres && p.taste.genres.length || p.taste.dirs && p.taste.dirs.length) ? `
+        <div class="sechead">Their taste</div>
+        <div class="chips" style="margin-bottom:14px">${[...(p.taste.genres||[]), ...(p.taste.dirs||[])].map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
+      ${rows.length ? `
+        <div class="sechead">Taste breakdown</div>
+        <div class="card" style="padding:14px">
+          ${sm.dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
+            <span class="bar"><span class="fill" style="width:${Math.round(c/sm.distN*100)}%;background:${col}"></span></span>
+            <span class="cnt">${c}</span></div>`).join("")}
+        </div>` : ""}
+      ${sm.topGenres.length ? `
+        <div class="sechead">Most-ranked genres</div>
+        <div class="chips">${sm.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>` : ""}
+      ${rows.length ? personPodiumHTML(byType) : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
     </div>`, false);
   sheet.classList.add("full");
   hydratePosters(sheet);
@@ -2380,6 +2510,7 @@ const CLICK_ROUTES = [
   ["clike",       el => { const [u, mv] = el.dataset.clike.split("|"); toggleCloudLike(u, mv, el); }],
   ["dislike",     el => toggleLocalDislike(el.dataset.dislike)],
   ["cdislike",    el => { const [u, mv] = el.dataset.cdislike.split("|"); toggleCloudDislike(u, mv); }],
+  ["tsort",       el => resortTakes(el.dataset.tsort)],
   ["person",      el => openPerson(el.dataset.person)],
   ["notif",       el => openDetail(el.dataset.notif)],
   ["notifperson", el => openPerson(el.dataset.notifperson)],
