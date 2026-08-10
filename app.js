@@ -1090,12 +1090,13 @@ async function loadCommunityScores(movieId){
 /* the person whose sheet is open, so the delegated [id] routes below can act
    on them without every button closing over a fresh copy */
 let SHEET_PERSON = null;
-async function openPerson(id){
-  SHEET_PERSON = null;
-  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+/* shared by openPerson (compact sheet) and openFullProfile (full-screen view):
+   fetches the profile row + up to 500 rankings and groups them by media_type.
+   Returns null if the profile couldn't be loaded. */
+async function loadPersonData(id){
   const pr = await sb(pgPath("profiles", {id:pgEq(id), select:"*"}));
   const p = pr.ok ? (await pr.json())[0] : null;
-  if(!p){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); return; }
+  if(!p) return null;
   const rr = await sb(pgPath("rankings", {user_id:pgEq(id), select:"*", order:"score.desc", limit:500}));
   const rows = rr.ok ? await rr.json() : [];
   rows.forEach(r => { if(!getMovie(r.movie_id)) LIVE[r.movie_id] = rowToMovie(r); });
@@ -1103,6 +1104,14 @@ async function openPerson(id){
   // each type's list is already sorted within itself — no re-sort needed
   const byType = {movie:[], show:[], anime:[]};
   rows.forEach(r => (byType[r.media_type] || byType.movie).push(r));
+  return {p, rows, byType};
+}
+async function openPerson(id){
+  SHEET_PERSON = null;
+  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+  const data = await loadPersonData(id);
+  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); return; }
+  const {p, rows, byType} = data;
   const overlap = rows.filter(r => isRanked(r.movie_id));
   const both = overlap.slice(0, 6);
   const match = overlap.length
@@ -1121,6 +1130,7 @@ async function openPerson(id){
         <div class="dactions">
           ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
           <button class="pillbtn" id="pshare">Share</button>
+          <button class="pillbtn" id="pfull">View full profile</button>
         </div>
       </div>
       ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared title${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
@@ -1137,6 +1147,49 @@ async function openPerson(id){
         <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
         ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
       : `<div class="sechead">Their top rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}`);
+  hydratePosters(sheet);
+}
+/* full-screen profile view: reuses the sheet/overlay machinery (openSheet/
+   closeSheet) rather than a 6th nav screen, just adds .full to #sheet so the
+   CSS fills the viewport instead of drawing a bottom drawer. Shows every
+   ranked title per type (capped at 30/type — plenty for a "full" view without
+   rendering an unbounded list for someone with hundreds of rankings), and
+   paints the *viewed person's* wallpaper via an inline style scoped to this
+   view only — applyUI()/S.ui must never be touched here, that's the
+   signed-in user's own wallpaper. */
+async function openFullProfile(){
+  if(!SHEET_PERSON) return;
+  const id = SHEET_PERSON.id;
+  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+  sheet.classList.add("full");
+  const data = await loadPersonData(id);
+  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); sheet.classList.add("full"); return; }
+  const {p, rows, byType} = data;
+  SHEET_PERSON = {id, handle: p.handle, name: p.display_name};
+  const wallStyle = p.ui && p.ui.wall
+    ? ` style="background-image:linear-gradient(var(--wallshade),var(--wallshade)),url('https://images.metahub.space/background/medium/${esc(p.ui.wall)}/img')"`
+    : "";
+  openSheet(`
+    <div class="fullprofile"${wallStyle}>
+      <div class="fullhead">
+        <button class="pillbtn soft" id="pfullClose" aria-label="Close full profile">✕ Close</button>
+      </div>
+      <div class="dhead">
+        ${avatarHTML(p.display_name, p.avatar_hue, p.avatar_url, "width:74px;height:74px;font-size:26px")}
+        <div class="meta">
+          <h2>${esc(p.display_name)}</h2>
+          <div class="d">@${esc(p.handle)} · ${rows.length} title${rows.length===1?"":"s"} ranked</div>
+        </div>
+      </div>
+      ${rows.length ? TYPES.map(t => byType[t].length ? `
+        <div class="sechead">${TYPE_LABEL[t]}</div>
+        <div class="card">${byType[t].slice(0, 30).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+          <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
+          <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
+          ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
+        : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
+    </div>`, false);
+  sheet.classList.add("full");
   hydratePosters(sheet);
 }
 /* follow/unfollow from an open profile sheet. CLOUD.follows is re-read here
@@ -2357,6 +2410,8 @@ const CLICK_IDS = {
   // public profile sheet
   pfollow:        () => toggleSheetPerson(),
   pshare:         () => shareSheetPerson(),
+  pfull:          () => openFullProfile(),
+  pfullClose:     () => closeSheet(),
   // tonight's pick
   pkSeen:         () => { if(PICK_MOVIE) startRate(PICK_MOVIE.id); },
   pkAgain:        () => { if(PICK_MOVIE) pickTonight(PICK_MOVIE.id); },
@@ -2456,6 +2511,7 @@ function closeSheet(force){
   sheetLocked = false;
   overlay.classList.remove("on");
   sheet.innerHTML = "";
+  sheet.classList.remove("full");
   sheet.removeAttribute("tabindex");
   const back = sheetOpener;
   sheetOpener = null;

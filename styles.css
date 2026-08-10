@@ -212,6 +212,16 @@
   .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 16px}
   .sheet .h1{font-size:20px}
 
+  /* full-screen profile view: same #sheet element, just filling the viewport
+     instead of drawing a bottom drawer. .sheet.full has higher specificity
+     than every plain .sheet rule above (and the desktop one below), so it
+     always wins regardless of source order or viewport width. */
+  .sheet.full{max-width:none;width:100%;height:100dvh;min-height:100dvh;max-height:100dvh;
+    border-radius:0;padding:0;margin:0;animation:none;overflow-y:auto}
+  .fullprofile{min-height:100dvh;padding:20px 20px calc(20px + env(safe-area-inset-bottom));
+    background-color:var(--bg);background-size:cover;background-position:center top}
+  .fullhead{display:flex;justify-content:flex-end;margin-bottom:12px}
+
   /* rate flow */
   .buckets{display:grid;gap:10px;margin-top:14px}
   .bucket{display:flex;align-items:center;gap:12px;border-radius:14px;padding:14px;border:1px solid var(--line);background:var(--surface);text-align:left}
