@@ -1813,7 +1813,7 @@ function profileBannerHTML(d){
       <button class="pillbtn" id="loginBtn">Log in</button></div>`;
 }
 function profileStatsHTML(d){
-  return `<div class="stats" style="grid-template-columns:repeat(4,1fr)">
+  return `<div class="stats" style="grid-template-columns:repeat(4,minmax(0,1fr))">
       <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
       <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
       <div class="stat"><div class="n">${S.watch.length}</div><div class="l">Queued</div></div>
@@ -2541,9 +2541,9 @@ function openCustom(){
     <h1 class="h1">Add media</h1>
     <p class="sub">It joins your personal database and is ready to rank.</p>
     <div style="display:grid;gap:10px">
-      <input id="ctitle" aria-label="Title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
-      <input id="cyear" aria-label="Year" placeholder="Year" inputmode="numeric" maxlength="4" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
-      <input id="cgenre" aria-label="Genre (optional)" placeholder="Genre (optional)" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <input class="field" id="ctitle" aria-label="Title" placeholder="Title">
+      <input class="field" id="cyear" aria-label="Year" placeholder="Year" inputmode="numeric" maxlength="4">
+      <input class="field" id="cgenre" aria-label="Genre (optional)" placeholder="Genre (optional)">
       <div style="display:flex;gap:9px;margin-top:4px">
         <button class="pillbtn acc" id="csave">Add &amp; rank</button>
         <button class="pillbtn" id="ccancel">Cancel</button>

@@ -45,6 +45,10 @@
   *{box-sizing:border-box}
   html,body{margin:0;padding:0}
   body{background:var(--frame);color:var(--ink);font-family:var(--body);-webkit-font-smoothing:antialiased}
+  /* every interactive control already has its own pressed/:active look —
+     without this, Android Chrome and older iOS Safari flash a grey box over
+     whatever was tapped, on top of that */
+  button,a,[tabindex]{-webkit-tap-highlight-color:transparent}
   button{font-family:inherit;color:inherit;background:none;border:none;padding:0;cursor:pointer}
   button:focus-visible,input:focus-visible,a:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px;border-radius:6px}
   input{font-family:inherit}
@@ -81,8 +85,12 @@
   .avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
 
   /* header */
+  /* apple-mobile-web-app-status-bar-style is black-translucent (index.html),
+     so the status bar overlays web content instead of pushing it down —
+     without this top inset the logo would sit under the notch/status bar
+     on an installed iOS home-screen app */
   .top{position:sticky;top:0;z-index:20;background:var(--bg);border-bottom:1px solid var(--line);
-    padding:14px 18px 12px;display:flex;align-items:center;justify-content:space-between}
+    padding:calc(14px + env(safe-area-inset-top)) 18px 12px;display:flex;align-items:center;justify-content:space-between}
   .logo{display:flex;align-items:center;gap:9px}
   .logo svg{display:block}
   .wordmark{font-family:var(--display);font-weight:700;font-size:22px;letter-spacing:.5px;color:var(--accent)}
@@ -160,7 +168,10 @@
   /* `outline:none` here used to remove the only focus indicator the two search
      fields had, so keyboard users lost the caret's position entirely. The ring
      moves to the wrapper instead, which is what the field visually is. */
-  .searchbar input{border:none;outline:none;background:transparent;color:var(--ink);font-size:15px;width:100%}
+  /* 16px, not 15 — iOS Safari zooms the whole page in on focus for any text
+     input under 16px, and doesn't zoom back out on blur. Same reasoning on
+     .field below and the three inline custom-add inputs in app.js. */
+  .searchbar input{border:none;outline:none;background:transparent;color:var(--ink);font-size:16px;width:100%}
   .searchbar:focus-within{outline:2px solid var(--accent);outline-offset:2px}
   .searchbar input::placeholder{color:var(--muted)}
 
@@ -185,7 +196,11 @@
   .phead .avatar{width:58px;height:58px;font-size:20px}
   .pname{font-family:var(--display);font-weight:700;font-size:20px}
   .phandle{color:var(--muted);font-size:13px}
-  .stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:16px}
+  /* minmax(0,1fr), not bare 1fr — a bare 1fr track still has an implicit
+     auto minimum, so a stat's content (the number + label) can force the
+     grid wider than its container instead of the columns shrinking to fit,
+     overflowing the screen horizontally on the narrowest phones */
+  .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
   .stat{background:var(--surface);border:1px solid var(--line);border-radius:14px;padding:12px 10px;text-align:center}
   .stat .n{font-family:var(--display);font-weight:700;font-size:21px;font-variant-numeric:tabular-nums}
   .stat .l{color:var(--muted);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:600;margin-top:3px}
@@ -253,7 +268,7 @@
   .feat .fdot{width:26px;height:26px;border-radius:8px;background:var(--accent-soft);color:var(--accent);
     display:flex;align-items:center;justify-content:center;flex:none;font-size:13px}
   .feats{display:grid;gap:12px;margin:0 auto 26px;max-width:320px}
-  .field{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px}
+  .field{width:100%;padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:16px}
   .authcard{background:var(--surface);border:1px solid var(--line);border-radius:18px;padding:18px;display:grid;gap:10px;max-width:360px;margin:0 auto}
   .socialbtn{display:flex;align-items:center;justify-content:center;gap:9px;border:1px solid var(--line);background:var(--surface2);
     border-radius:12px;padding:11px;font-size:14px;font-weight:600}
