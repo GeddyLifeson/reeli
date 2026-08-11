@@ -302,6 +302,26 @@
   .phead .avatar{width:58px;height:58px;font-size:20px}
   .pname{font-family:var(--display);font-weight:800;font-size:20px}
   .phandle{color:var(--muted);font-size:13px}
+
+  /* profile header, laminated as a video-store membership card. Same
+     navy-card/gold-label vocabulary as .wrapcard/.wraplabel below (this is
+     the second "screenshot-shaped" surface in the profile, so it deliberately
+     matches rather than differentiates) plus a cheap diagonal "laminate sheen"
+     — one gradient layer, no extra markup — for the plastic-card read. */
+  .memcard{position:relative;overflow:hidden;background:var(--nav-bg);border-radius:16px;padding:16px 18px 14px;
+    box-shadow:var(--pop);border:1.5px solid var(--line);margin-bottom:16px;animation:riseIn .3s ease both}
+  .memcard::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(115deg,rgba(255,255,255,.14) 0%,rgba(255,255,255,0) 22%,rgba(255,255,255,0) 68%,rgba(255,255,255,.08) 100%)}
+  .memcard-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;position:relative}
+  .memcard-top .iconbtn{border-color:transparent;background:rgba(255,255,255,.08);color:var(--nav-ink)}
+  .memcard-top .pillbtn{background:transparent;border-color:var(--nav-ink);color:var(--nav-ink)}
+  .memcard-body{display:flex;align-items:center;gap:14px;margin-bottom:14px;position:relative}
+  .memcard-body .pname{color:var(--gold)}
+  .memcard-body .phandle{color:var(--nav-ink)}
+  .memcard-fields{display:flex;gap:22px;flex-wrap:wrap;padding-top:12px;border-top:1px dashed rgba(201,211,238,.3);position:relative}
+  .memfield{display:flex;flex-direction:column;gap:3px}
+  .memlbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--nav-ink);opacity:.75}
+  .memval{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.03em;color:var(--gold);font-variant-numeric:tabular-nums}
   /* minmax(0,1fr), not bare 1fr — a bare 1fr track still has an implicit
      auto minimum, so a stat's content (the number + label) can force the
      grid wider than its container instead of the columns shrinking to fit,
