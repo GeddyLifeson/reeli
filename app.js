@@ -372,6 +372,7 @@ function aniToMovie(r){
     genre: (r.genres && r.genres[0]) || "", dir: "", hue: hash,
     poster: r.coverImage && r.coverImage.large || null,
     desc: r.description ? r.description.replace(/<[^>]+>/g, "").trim() : null,
+    format: r.format || "", episodes: r.episodes || null,
     kind: "anime", enriched: true };
 }
 function anilistSearch(term, cb){
@@ -384,8 +385,20 @@ function anilistTrending(cb){
     `query{Page(page:1,perPage:14){media(type:ANIME,sort:TRENDING_DESC){${ANILIST_FIELDS}}}}`,
     {}, d => cb(d ? d.Page.media.map(aniToMovie) : null));
 }
-/* one-line meta under a title: skip blanks */
-function mline(m){ return [m.year, m.genre, m.dir].filter(x => x && x !== "—").join(" · "); }
+/* AniList's `format` enum, prettied up for display. TV is the overwhelming
+   majority of anime and is redundant on a tab already labeled "Anime", so it
+   renders as nothing; everything else (OVA/ONA/SPECIAL are already
+   fan-legible in caps) just gets title-cased where that reads better. */
+const ANI_FORMAT_LABEL = { TV:"", TV_SHORT:"TV Short", MOVIE:"Movie", SPECIAL:"Special", OVA:"OVA", ONA:"ONA", MUSIC:"Music" };
+/* one-line meta under a title: skip blanks. Anime items splice in episode
+   count and format (both AniList-only fields) right after the genre. */
+function mline(m){
+  const extra = m.kind === "anime"
+    ? [Number.isInteger(m.episodes) && m.episodes > 0 ? `${m.episodes} eps` : "",
+       ANI_FORMAT_LABEL[m.format] || ""]
+    : [];
+  return [m.year, m.genre, m.dir, ...extra].filter(x => x && x !== "—").join(" · ");
+}
 /* fill in description/rating/runtime for ANY movie: catalog ids go straight
    to the meta endpoint; built-in/custom titles resolve their IMDb id first
    (reusing the poster cache's stored id when available) */
@@ -1554,6 +1567,9 @@ function renderRanks(){
    is open is `searchType`; switching it re-runs trending/search for the new
    type from scratch. */
 let query = "", searchType = "movie", liveResults = [], liveState = "idle", liveT = null, liveSeq = 0;
+// client-side format filter for the Anime tab's trending/library lists — no
+// extra network request, since `.format` is already on every anime item
+let animeFormat = "all";
 function movieRowHTML(m){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
   return `<div class="row">
@@ -1570,6 +1586,7 @@ function movieRowHTML(m){
 function switchSearchType(t){
   if(t === searchType || !TYPES.includes(t)) return;
   searchType = t;
+  animeFormat = "all";
   liveResults = []; liveState = "idle"; liveSeq++;
   if(query.trim()) runLiveSearch(query.trim());
   renderSearch();
@@ -1648,9 +1665,20 @@ function renderSearch(){
     const customList = q
       ? customPool.filter(m => (m.title+" "+m.genre+" "+m.year).toLowerCase().includes(q))
       : customPool.filter(m => !isRanked(m.id));
-    const customRows = customList.map(movieRowHTML).join("");
     const trend = TRENDING[searchType];
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    // Anime-only format filter (TV/Movie/OVA/...), applied client-side to
+    // whatever's already loaded — only shown once 2+ distinct formats are
+    // actually present, same gating renderRanks() uses for its genre row.
+    const formats = searchType === "anime" && Array.isArray(trend)
+      ? [...new Set(trend.map(m => m.format).filter(Boolean))].sort() : [];
+    if(animeFormat !== "all" && !formats.includes(animeFormat)) animeFormat = "all";
+    const matchesFormat = m => animeFormat === "all" || m.format === animeFormat;
+    const formatFilterHTML = formats.length >= 2 ? `<div class="segs" style="margin-top:-6px">
+      ${["all", ...formats].map(f =>
+        `<button class="seg sm ${animeFormat===f?"cur":""}" data-afmt="${esc(f)}">${f === "all" ? "All" : esc(ANI_FORMAT_LABEL[f] || f)}</button>`).join("")}
+    </div>` : "";
+    const customRows = customList.filter(matchesFormat).map(movieRowHTML).join("");
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map(movieRowHTML).join("") : "";
     const trendEmpty = !q && !trendRows
       ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
@@ -1667,6 +1695,7 @@ function renderSearch(){
       animeTeaser = atRows ? `<div class="sechead">Trending anime</div><div class="card">${atRows}</div>` : "";
     }
     body = `
+      ${formatFilterHTML}
       ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
       ${animeTeaser}
       ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
@@ -2297,6 +2326,7 @@ const CLICK_ROUTES = [
   ["addcustom",   () => openCustom()],
   ["ftab",        el => { feedTab = el.dataset.ftab; renderFeed(); }],
   ["stype",       el => switchSearchType(el.dataset.stype)],
+  ["afmt",        el => { animeFormat = el.dataset.afmt; renderSearch(); }],
   ["rtype",       el => { rankType = el.dataset.rtype; rankGenre = ""; renderRanks(); }],
   ["filter",      el => { rankFilter = el.dataset.filter; renderRanks(); }],
   ["gfilter",     el => { rankGenre = rankGenre === el.dataset.gfilter ? "" : el.dataset.gfilter; renderRanks(); }],
