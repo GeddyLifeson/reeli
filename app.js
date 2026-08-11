@@ -257,6 +257,27 @@ function rankOf(id){ return rankedIndex(typeOf(id)).pos.get(id) || 0; }
 function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
 function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
 
+/* Tiebreaker: once an item is placed by the binary-search flow, nothing ever
+   makes it compete again — two movies that happened to land one slot apart
+   can sit at nearly the same score indefinitely, even if a rematch would flip
+   them. This is a pure scan for candidates worth re-asking about: adjacent
+   (same bucket, same media type) pairs whose scores are suspiciously close.
+   Capped at TIEBREAK_CAP so a big list doesn't turn into a wall of prompts —
+   the Ranks screen only ever surfaces the first pair at a time anyway. */
+const TIEBREAK_MAX_GAP = 0.2, TIEBREAK_CAP = 3;
+function findTiebreakers(type){
+  const arrs = rankedIndex(type).arrs;
+  const out = [];
+  for(const b of ["loved","fine","disliked"]){
+    const arr = arrs[b];
+    for(let i = 0; i < arr.length - 1 && out.length < TIEBREAK_CAP; i++){
+      const idA = arr[i], idB = arr[i + 1];
+      if(Math.abs(scoreOf(idA) - scoreOf(idB)) <= TIEBREAK_MAX_GAP) out.push([idA, idB]);
+    }
+  }
+  return out;
+}
+
 /* ---------- helpers ---------- */
 const $ = sel => document.querySelector(sel);
 /* one place to surface swallowed failures: never changes control flow, just
@@ -1747,6 +1768,29 @@ function onMateQueryInput(mq){
 
 /* ---------- rankings ---------- */
 let rankFilter = "all", rankGenre = "", rankType = "movie";
+/* order-independent key for a pair: a swap flips which id is idA vs idB, so
+   dismissal (and "don't immediately re-ask after a swap") has to key off the
+   two ids together, not their current left/right order */
+function pairKey(a, b){ return a < b ? a + "|" + b : b + "|" + a; }
+/* pairs the user has already waved off (or already settled) this session —
+   not persisted, so a fresh load can surface them again, but it sticks for
+   as long as the tab stays open */
+let tiebreakDismissed = new Set();
+/* dismissible card above the tabs on the Ranks screen, only for rankType's
+   own close calls; empty string (nothing rendered) once there are none left,
+   same pattern as profileGenresHTML */
+function tiebreakBannerHTML(){
+  const pairs = findTiebreakers(rankType).filter(([a, b]) => !tiebreakDismissed.has(pairKey(a, b)));
+  if(!pairs.length) return "";
+  const [idA, idB] = pairs[0], n = pairs.length;
+  return `<div class="tiebreak">
+    <p><b>${n} close call${n === 1 ? "" : "s"}</b> in your ${esc(TYPE_LABEL[rankType])} list — two ${esc(typeNoun(rankType, 2))} landed almost tied. Worth a rematch?</p>
+    <div class="tbbtns">
+      <button class="pillbtn acc" data-tiebreak="${idA}|${idB}">Settle it</button>
+      <button class="iconbtn" data-tbdismiss="${idA}|${idB}" aria-label="Dismiss">✕</button>
+    </div>
+  </div>`;
+}
 function renderRanks(){
   const tabs = `<div class="segs" role="tablist">
     ${TYPES.map(t => `<button class="seg ${rankType===t?"cur":""}" data-rtype="${t}">${TYPE_LABEL[t]} (${allRanked(t).length})</button>`).join("")}
@@ -1788,6 +1832,7 @@ function renderRanks(){
     <h1 class="h1">Your ranking</h1>
     <p class="sub">Every score is earned by head-to-head matchups — no gut-feel star ratings here.</p>
     ${tabs}
+    ${tiebreakBannerHTML()}
     ${body}`;
 }
 
@@ -2623,6 +2668,9 @@ const CLICK_ROUTES = [
   ["rtype",       el => { rankType = el.dataset.rtype; rankGenre = ""; renderRanks(); }],
   ["filter",      el => { rankFilter = el.dataset.filter; renderRanks(); }],
   ["gfilter",     el => { rankGenre = rankGenre === el.dataset.gfilter ? "" : el.dataset.gfilter; renderRanks(); }],
+  ["tiebreak",    el => { const [a, b] = el.dataset.tiebreak.split("|"); openTiebreaker(a, b); }],
+  ["tbdismiss",   el => dismissTiebreak(el.dataset.tbdismiss)],
+  ["tbpick",      el => answerTiebreak(el.dataset.tbpick)],
   ["acc",         el => { S.ui.accent = el.dataset.acc === "" ? null : +el.dataset.acc; save(); applyUI(); renderProfile(); }],
   ["oauth",       el => startOauth(el.dataset.oauth)],
   ["chue",        el => pickHue(el, "chue")],
@@ -3013,6 +3061,55 @@ function undoPlacement(){
   delete S.notes[PLACED_ID];
   if(S.myFeed.length && S.myFeed[0].movie === PLACED_ID) S.myFeed.shift();
   save(); closeSheet(); render(cur); toast("Ranking undone");
+}
+
+/* ---------- tiebreaker: a one-off rematch for two already-ranked items ----------
+   Deliberately NOT the rate flow: a tiebreaker never runs a binary search, it
+   just asks once about a pair findTiebreakers() already found suspiciously
+   close, then leaves the order alone or swaps the two — nothing else about
+   the ranking changes. TIEBREAK mirrors how R carries state for the real
+   flow, but its shape is flat because there is no search left to track. */
+let TIEBREAK = null; // {bucket, idA, idB} | null
+function openTiebreaker(idA, idB){
+  const a = getMovie(idA), b = getMovie(idB);
+  if(!a || !b) return;
+  TIEBREAK = {bucket: bucketOf(idA), idA, idB};
+  openSheet(`
+    <div class="step">Tiebreaker · these two landed almost tied</div>
+    <h1 class="h1" style="text-align:center;margin-top:14px">Which did you like more?</h1>
+    <div class="faceoff">
+      <button class="contender" data-tbpick="a">${posterHTML(a,"p-md")}<span class="t">${esc(a.title)}</span><span class="d">${a.year}</span></button>
+      <span class="vs">VS</span>
+      <button class="contender" data-tbpick="b">${posterHTML(b,"p-md")}<span class="t">${esc(b.title)}</span><span class="d">${b.year}</span></button>
+    </div>
+    <button class="tiebtn" data-tbpick="tie">Still too close to call</button>`);
+}
+/* the user answered the one-off matchup at TIEBREAK.
+     "a"   idA (already ranked above idB) confirmed as the better one -> no change
+     "b"   idB was actually preferred -> swap their two positions in S[bucket]
+     "tie" leave the order as-is
+   Either way the pair is dropped from this session's prompts so it doesn't
+   immediately resurface. */
+function answerTiebreak(choice){
+  if(!TIEBREAK) return;
+  const {bucket, idA, idB} = TIEBREAK;
+  tiebreakDismissed.add(pairKey(idA, idB));
+  if(choice === "b"){
+    const arr = S[bucket], ia = arr.indexOf(idA), ib = arr.indexOf(idB);
+    // splicing/reassigning S[bucket] elsewhere invalidates RANKED_CACHE via its
+    // length/identity check; a same-length swap does not, so bumpRanked() here
+    // is the explicit invalidation the cache's own comment calls for
+    if(ia !== -1 && ib !== -1){ [arr[ia], arr[ib]] = [arr[ib], arr[ia]]; bumpRanked(); }
+  }
+  TIEBREAK = null;
+  save();
+  closeSheet();
+  if(cur === "ranks") renderRanks();
+}
+function dismissTiebreak(pair){
+  const [a, b] = pair.split("|");
+  tiebreakDismissed.add(pairKey(a, b));
+  if(cur === "ranks") renderRanks();
 }
 
 /* ---------- personalization: accent color + movie-scene wallpaper ---------- */

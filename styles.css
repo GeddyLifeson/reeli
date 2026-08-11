@@ -301,6 +301,13 @@
   .chip{background:var(--surface);border:1.5px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--muted);
     animation:riseIn .3s ease both}
   .danger{color:var(--bad);font-weight:700;font-size:13px;margin-top:18px}
+  /* Ranks screen: a close call worth a rematch, in the same amber "not sure
+     yet" tone the fine-bucket dot already uses elsewhere */
+  .tiebreak{display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:14px;
+    border-radius:12px;border:1.5px solid var(--mid);background:var(--mid-soft)}
+  .tiebreak p{flex:1;margin:0;font-size:13px;line-height:1.45;color:var(--ink)}
+  .tiebreak b{color:var(--mid)}
+  .tiebreak .tbbtns{display:flex;align-items:center;gap:6px;flex:none}
 
   .empty{text-align:center;padding:44px 24px;color:var(--muted)}
   .empty .big{font-size:34px;margin-bottom:10px}
