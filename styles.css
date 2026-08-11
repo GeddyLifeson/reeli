@@ -270,6 +270,13 @@
   .facts button{display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px;font-weight:700}
   .facts button.liked{color:var(--bad)}
   .facts button.disliked{color:var(--ink)}
+  /* the hot-take follow button reuses .iconbtn (same on/off treatment as the
+     watchlist bookmark) but at 26px, not the standalone 34px — a hot-take
+     row is already three controls deep (like, dislike, follow) so the full
+     size would crowd it; 26px still gives it a real hit box of its own,
+     unlike the borderless like/dislike icons beside it, since unlike those
+     it's a state change with a network round trip, not just a local toggle */
+  .facts .iconbtn{width:26px;height:26px;font-size:13px;font-weight:800;flex:none}
 
   /* profile */
   .phead{display:flex;align-items:center;gap:14px;margin-bottom:16px}

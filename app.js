@@ -1175,6 +1175,10 @@ function takesSectionHTML(){
     ${rows.length ? `<div class="card">${rows.map(t => {
       const key = t.user_id + "|" + TAKES_CACHE.movieId;
       const liked = CLOUD.myLikes.has(key), disliked = CLOUD.myDislikes.has(key);
+      // takers is always drawn from loadCommunityScores' `others`, which already
+      // excludes myId() — so no own take reaches this row, and no self-check
+      // is needed before offering to follow the person who wrote it
+      const following = CLOUD.follows.has(t.user_id);
       return `<div class="row" style="align-items:flex-start">
         <button data-person="${esc(t.user_id)}" style="padding:0;flex:none;border-radius:50%">
           ${avatarHTML(t.profiles.display_name, t.profiles.avatar_hue, t.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}</button>
@@ -1186,6 +1190,7 @@ function takesSectionHTML(){
               <svg width="14" height="14" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg></button>
             <button data-cdislike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${disliked?"disliked":""}" aria-pressed="${disliked}" aria-label="${disliked?"Remove dislike from":"Dislike"} ${esc(t.profiles.display_name)}'s take">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="${disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
+            <button data-pfollow="${esc(t.user_id)}" class="iconbtn ${following?"on":""}" aria-pressed="${following}" aria-label="${following?"Remove":"Add"} ${esc(t.profiles.display_name)} as a Reelmate" title="${following?"Reelmate":"Add Reelmate"}">${following ? "✓" : "+"}</button>
           </span>
         </span>
         ${scoreHTML(Number(t.score))}
@@ -1711,6 +1716,11 @@ function toggleMate(id){
     if(p) p.following = !following;
     toast(following ? `Removed ${name}` : `${name} is now a Reelmate 🎟️`);
     renderFeed();
+    // the detail sheet's hot-takes list is an overlay renderFeed() doesn't
+    // know about — nudge it too, same targeted refresh bumpTakeLike uses,
+    // so a follow tapped from a hot take flips its pressed state right away
+    const takesEl = document.getElementById("takesInner");
+    if(takesEl) takesEl.innerHTML = takesSectionHTML();
   };
   following ? BACKEND.unfollow(id, done) : BACKEND.follow(id, done);
 }
