@@ -278,6 +278,25 @@
      it's a state change with a network round trip, not just a local toggle */
   .facts .iconbtn{width:26px;height:26px;font-size:13px;font-weight:800;flex:none}
 
+  /* debate threads: a hot take's replies, collapsed under it by default. The
+     dashed rule (rather than another solid .card border) reads as "still part
+     of this note", not a new section — the sechead treatment is reserved for
+     real screen sections. Each reply is a shrunk-down echo of the take row
+     it's nested under: small avatar, name, body, no facts row of its own —
+     replies aren't themselves re-repliable. */
+  .tkreplies{margin-top:8px;padding-top:8px;border-top:1.5px dashed var(--line);animation:riseIn .2s ease both}
+  .tkreplies[hidden]{display:none}
+  .tkreply{display:flex;gap:8px;align-items:flex-start;padding:5px 0}
+  .tkreply .meta{flex:1;min-width:0}
+  .tkreply .t{font-weight:700;display:block}
+  .tkreply .d{margin-top:1px}
+  .tkreply-form{display:flex;gap:8px;align-items:flex-end;margin-top:8px}
+  /* 16px, not smaller — same iOS Safari zoom-on-focus reasoning as .field and
+     .searchbar input above: anything under 16px zooms the page in on focus
+     and never zooms back out */
+  .tkreply-form textarea{resize:vertical;min-height:44px;max-height:120px;font-size:16px;padding:8px 10px;line-height:1.4}
+  .tkreply-form .pillbtn{flex:none}
+
   /* profile */
   .phead{display:flex;align-items:center;gap:14px;margin-bottom:16px}
   .phead .avatar{width:58px;height:58px;font-size:20px}

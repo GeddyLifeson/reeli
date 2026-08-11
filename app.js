@@ -1220,11 +1220,17 @@ async function loadCommunityScores(movieId){
     // everyone's take, not just Reelmates', so there's something to go on
     // before committing to rank it yourself
     const takers = others.filter(x => x.note);
-    const lk = await sb(pgPath("likes", {ranking_movie:pgEq(movieId), select:"ranking_user"}));
+    const [lk, rc] = await Promise.all([
+      sb(pgPath("likes", {ranking_movie:pgEq(movieId), select:"ranking_user"})),
+      sb(pgPath("hot_take_replies", {ranking_movie:pgEq(movieId), select:"ranking_user"})),
+    ]);
     const likeCounts = new Map();
     if(lk.ok) (await lk.json()).forEach(x => likeCounts.set(x.ranking_user, (likeCounts.get(x.ranking_user)||0) + 1));
+    const replyCounts = new Map();
+    if(rc.ok) (await rc.json()).forEach(x => replyCounts.set(x.ranking_user, (replyCounts.get(x.ranking_user)||0) + 1));
     if(document.getElementById("commWrap") !== wrap || detailId !== movieId) return; // sheet moved on during that second fetch
-    TAKES_CACHE = {movieId, rows: takers.map(x => ({...x, likeCount: likeCounts.get(x.user_id) || 0}))};
+    TAKES_CACHE = {movieId, rows: takers.map(x => ({...x,
+      likeCount: likeCounts.get(x.user_id) || 0, replyCount: replyCounts.get(x.user_id) || 0}))};
     wrap.innerHTML = avgHTML + `<div id="takesInner">${takesSectionHTML()}</div>`;
   }catch(e){ logErr("loading community scores", e); }
 }
@@ -1240,6 +1246,114 @@ function takeHotScore(t){
   const hrs = Math.max(0, (Date.now() - new Date(t.updated_at).getTime()) / 36e5);
   return t.likeCount / Math.pow(hrs + 2, 1.5);
 }
+
+/* ---- debate threads: replies to a hot take, keyed by the same
+   (ranking_user, ranking_movie) pair likes/dislikes use. A thread is loaded
+   lazily the first time it's expanded and cached so re-opening it — or any
+   other like/dislike/reply re-rendering #takesInner elsewhere on the sheet —
+   doesn't refetch it. Capped to REPLY_PAGE so a viral take can't turn the
+   sheet into an unbounded list. */
+const REPLY_PAGE = 10;
+let OPEN_REPLIES = new Set();  // "<ranking_user>|<ranking_movie>" keys currently expanded
+let REPLY_CACHE = new Map();   // key -> fetched rows, once loaded
+let REPLY_LOADING = new Set(); // keys with a fetch in flight
+/* dashes are fine in a DOM id (unlike a data- attribute name, which the
+   delegation test's static scanner requires to be a single lowercase word) —
+   this just needs to be unique per take and stable across re-renders */
+function replyDomId(prefix, key){ return prefix + "-" + key.replace(/[^a-zA-Z0-9]/g, "-"); }
+function replyCountLabel(n){ return n > 0 ? n + " repl" + (n === 1 ? "y" : "ies") : "Reply"; }
+function findTake(key){
+  return TAKES_CACHE && TAKES_CACHE.rows.find(t => t.user_id + "|" + TAKES_CACHE.movieId === key);
+}
+/* the collapsible body under one take: existing replies (oldest first, capped)
+   plus a compose box, gated on authed() the same way liking/disliking is —
+   guests can read a thread but can't post into it. */
+function repliesBlockHTML(t){
+  const key = t.user_id + "|" + TAKES_CACHE.movieId;
+  const loading = REPLY_LOADING.has(key);
+  const rows = REPLY_CACHE.get(key);
+  if(loading && !rows) return `<p class="d" style="margin:8px 0 0">Loading replies…</p>`;
+  const list = rows || [];
+  const shown = list.slice(0, REPLY_PAGE), extra = list.length - shown.length;
+  return `
+    ${shown.length ? shown.map(r => `
+      <div class="tkreply">
+        ${avatarHTML(r.profiles.display_name, r.profiles.avatar_hue, r.profiles.avatar_url, "width:22px;height:22px;font-size:10px")}
+        <span class="meta">
+          <span class="t" style="font-size:12px">${esc(r.profiles.display_name)}</span>
+          <span class="d" style="white-space:normal">${esc(r.body)}</span>
+        </span>
+      </div>`).join("") : `<p class="d" style="margin:8px 0 0">No replies yet${authed() ? " — be the first." : "."}</p>`}
+    ${extra > 0 ? `<p class="d" style="margin:6px 0 0">+${extra} more</p>` : ""}
+    ${authed() ? `
+      <div class="tkreply-form">
+        <textarea class="field" id="${replyDomId("tki", key)}" maxlength="280" rows="2"
+          aria-label="Reply to ${esc(t.profiles.display_name)}'s take" placeholder="Add a reply…"></textarea>
+        <button class="pillbtn acc" id="${replyDomId("tkb", key)}" data-tkreplypost="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}">Post</button>
+      </div>` : `<p class="d" style="margin:8px 0 0">Sign in to reply.</p>`}`;
+}
+/* open/close a thread. Loading it is a separate, targeted fetch (loadReplies)
+   so toggling stays instant even before the network responds. */
+function toggleReplies(userId, movieId){
+  const key = userId + "|" + movieId;
+  if(OPEN_REPLIES.has(key)) OPEN_REPLIES.delete(key);
+  else{
+    OPEN_REPLIES.add(key);
+    if(!REPLY_CACHE.has(key)) loadReplies(userId, movieId);
+  }
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
+}
+/* fetches one thread and repaints only that take's reply node — never
+   #takesInner, never #commWrap, never the sheet — so it can't clobber a draft
+   reply someone's mid-typing in a different open thread, and doesn't cost a
+   community-scores round trip just to show a thread. */
+async function loadReplies(userId, movieId){
+  const key = userId + "|" + movieId;
+  if(REPLY_LOADING.has(key)) return;
+  REPLY_LOADING.add(key);
+  refreshReplyThread(key);
+  try{
+    const r = await sb(pgPath("hot_take_replies", {ranking_user:pgEq(userId), ranking_movie:pgEq(movieId),
+      select:"id,body,author,profiles!hot_take_replies_author_fkey(" + PSEL + ")", order:"created_at.asc", limit:200}));
+    REPLY_CACHE.set(key, r.ok ? await r.json() : []);
+  }catch(e){ logErr("loading replies", e); REPLY_CACHE.set(key, REPLY_CACHE.get(key) || []); }
+  REPLY_LOADING.delete(key);
+  refreshReplyThread(key);
+}
+function refreshReplyThread(key){
+  const t = findTake(key);
+  const wrap = t && document.getElementById(replyDomId("tkw", key));
+  if(wrap) wrap.innerHTML = repliesBlockHTML(t);
+}
+async function submitReply(userId, movieId){
+  if(!authed()){ toast("Sign in to reply"); openAuthSheet("login"); return; }
+  const key = userId + "|" + movieId;
+  const inp = document.getElementById(replyDomId("tki", key));
+  const body = inp ? inp.value.trim().slice(0, 280) : "";
+  if(!body) return;
+  const btn = document.getElementById(replyDomId("tkb", key));
+  if(btn){ btn.textContent = "…"; btn.disabled = true; }
+  try{
+    const r = await sb(pgPath("hot_take_replies"), {method:"POST",
+      body: JSON.stringify({ranking_user:userId, ranking_movie:movieId, author:myId(), body})});
+    if(!r.ok){ toast("Couldn't post — try again"); return; }
+    // optimistic local append, same idea as the rest of this file's
+    // TAKES_CACHE/likeCount updates — no need to refetch what we just sent
+    const me = CLOUD.profile || {};
+    const rows = REPLY_CACHE.get(key) || [];
+    rows.push({id: "local-" + Date.now(), body, author: myId(),
+      profiles: {handle: me.handle, display_name: me.display_name, avatar_hue: me.avatar_hue, avatar_url: me.avatar_url}});
+    REPLY_CACHE.set(key, rows);
+    const t = findTake(key);
+    if(t) t.replyCount = (t.replyCount || 0) + 1;
+    refreshReplyThread(key);
+    const cEl = document.getElementById(replyDomId("tkc", key));
+    if(cEl && t) cEl.textContent = replyCountLabel(t.replyCount);
+  }catch(e){ logErr("posting a reply", e); toast("Couldn't post — try again"); }
+  finally{ const b = document.getElementById(replyDomId("tkb", key)); if(b){ b.textContent = "Post"; b.disabled = false; } }
+}
+
 function takesSectionHTML(){
   if(!TAKES_CACHE) return "";
   const rows = TAKES_CACHE.rows.slice().sort((a, b) =>
@@ -1259,6 +1373,7 @@ function takesSectionHTML(){
       // excludes myId() — so no own take reaches this row, and no self-check
       // is needed before offering to follow the person who wrote it
       const following = CLOUD.follows.has(t.user_id);
+      const repliesOpen = OPEN_REPLIES.has(key);
       return `<div class="row" style="align-items:flex-start">
         <button data-person="${esc(t.user_id)}" style="padding:0;flex:none;border-radius:50%">
           ${avatarHTML(t.profiles.display_name, t.profiles.avatar_hue, t.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}</button>
@@ -1271,7 +1386,12 @@ function takesSectionHTML(){
             <button data-cdislike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${disliked?"disliked":""}" aria-pressed="${disliked}" aria-label="${disliked?"Remove dislike from":"Dislike"} ${esc(t.profiles.display_name)}'s take">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="${disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
             <button data-pfollow="${esc(t.user_id)}" class="iconbtn ${following?"on":""}" aria-pressed="${following}" aria-label="${following?"Remove":"Add"} ${esc(t.profiles.display_name)} as a Reelmate" title="${following?"Reelmate":"Add Reelmate"}">${following ? "✓" : "+"}</button>
+            <button data-tkreplies="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" aria-expanded="${repliesOpen}" aria-label="${repliesOpen?"Hide":"Show"} replies to ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-8.4 8.4 8.3 8.3 0 0 1-3.9-.9L3 21l1.9-5.8a8.3 8.3 0 0 1-.9-3.9A8.4 8.4 0 0 1 12.4 3a8.4 8.4 0 0 1 8.4 8.4z"/></svg>
+              <span id="${replyDomId("tkc", key)}">${replyCountLabel(t.replyCount)}</span>
+            </button>
           </span>
+          <div class="tkreplies" id="${replyDomId("tkw", key)}" ${repliesOpen?"":"hidden"}>${repliesOpen ? repliesBlockHTML(t) : ""}</div>
         </span>
         ${scoreHTML(Number(t.score))}
       </div>`;
@@ -3202,6 +3322,8 @@ const CLICK_ROUTES = [
   ["dislike",     el => toggleLocalDislike(el.dataset.dislike)],
   ["cdislike",    el => { const [u, mv] = el.dataset.cdislike.split("|"); toggleCloudDislike(u, mv); }],
   ["tsort",       el => resortTakes(el.dataset.tsort)],
+  ["tkreplies",   el => { const [u, mv] = el.dataset.tkreplies.split("|"); toggleReplies(u, mv); }],
+  ["tkreplypost", el => { const [u, mv] = el.dataset.tkreplypost.split("|"); submitReply(u, mv); }],
   ["person",      el => openPerson(el.dataset.person)],
   ["notif",       el => openDetail(el.dataset.notif)],
   ["notifperson", el => openPerson(el.dataset.notifperson)],

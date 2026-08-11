@@ -107,3 +107,4 @@ Run these in the Supabase SQL editor, in a fresh tab each:
 | `supabase-dislikes.sql` | **required on existing projects** — adds the `dislikes` table |
 | `supabase-rewatches.sql` | **required on existing projects** — adds the `rewatches` table |
 | `supabase-watch-parties.sql` | to enable "watch together" — a shared watchlist between two Reelmates |
+| `supabase-hot-take-replies.sql` | **required on existing projects** — adds the `hot_take_replies` table |
