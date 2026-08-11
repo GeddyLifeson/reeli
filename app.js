@@ -2311,6 +2311,169 @@ function profileHeatmapHTML(){
       </div>
     </div>`;
 }
+/* ---------- yearly wrap-up: "your year on Reeli" ----------
+   Spotify-Wrapped-style highlight reel, built entirely from S.rankTimes (the
+   same durable {movieId: ISO timestamp} map the heat map above reads — see
+   its comment for where those dates come from and why they're trustworthy)
+   crossed with the existing per-type ranking primitives (allRanked/scoreOf/
+   typeOf/getMovie). No separate date-tracking or a new stats endpoint.
+
+   WINDOW CHOICE — calendar year, not a trailing-365-day window:
+     "Your 2026 on Reeli" reads like an actual year-in-review that closes at
+     Dec 31, the way Spotify Wrapped or a Letterboxd Year in Review does —
+     not a window whose boundary quietly slides depending on what day you
+     happen to open the app. A trailing-365-day window would also make the
+     card's headline stat ("your 2026 wrap-up") technically wrong for a chunk
+     of the year (mid-January still mostly showing last year's data).
+     Calendar-year is both the more honest label and the simpler rule.
+
+   DATE ARITHMETIC — deliberately all UTC (getUTCFullYear/getUTCMonth), never
+   local getFullYear/getMonth: every timestamp this reads was written with
+   Date.toISOString() (placeAt(), pullRankings()), i.e. already UTC, and the
+   heat map right above buckets days in UTC for the same reason. Matching that
+   convention means a ranking at 11pm UTC on Dec 31 doesn't land in next
+   year's wrap-up on a browser west of UTC (or the reverse near Jan 1).
+
+   IS Date.now()/new Date() SAFE HERE? Yes. It's only Workflow *scripts* that
+   may not touch the real clock — this is ordinary app code, same as
+   profileHeatmapHTML()'s `new Date()` two functions up. The one thing worth
+   checking was whether calling it here would make the 400-seed render fuzz
+   harness (test/render-snapshot.mjs) non-deterministic: it would not, for two
+   reasons. First, within a single test run every seed's markup is generated
+   back-to-back in milliseconds, so "the current year" can't change mid-run.
+   Second, test/seeds.mjs's rankTimes generator (search "rankTimes" there)
+   stamps every seeded date to a fixed "2026-..." string regardless of the
+   real clock, so the golden hash reflects a fixed year (2026) crossed with
+   whatever "the current year" resolves to when the snapshot is generated —
+   stable for any number of re-runs on the same day/year, and only ever needs
+   a `--update` (same as any other golden-snapshot change) if this is run for
+   the first time in a different real-world year than the snapshot was last
+   regenerated in. Verified by running test/render-snapshot.mjs twice in a
+   row before touching the golden hash: identical both times. */
+function wrapYearStats(){
+  const times = S.rankTimes || {}; // legacy/fuzz-seeded states may predate this field
+  const year = new Date().getUTCFullYear();
+  const ids = [];
+  for(const id in times){
+    const t = times[id], d = t && new Date(t);
+    if(!t || isNaN(d) || d.getUTCFullYear() !== year) continue;
+    if(!isRanked(id)) continue; // only items still on the list are score-able
+    ids.push(id);
+  }
+  if(!ids.length) return null;
+
+  const byType = {movie: [], show: [], anime: []};
+  ids.forEach(id => byType[typeOf(id)].push(id));
+
+  // this year's #1 per type: highest scoreOf() among that type's ranked
+  // items with a timestamp in the window (ties broken by allRanked() order,
+  // same as everywhere else scores are compared)
+  const top = {};
+  TYPES.forEach(t => {
+    if(!byType[t].length) return;
+    top[t] = byType[t].reduce((best, id) => scoreOf(id) > scoreOf(best) ? id : best);
+  });
+
+  const gc = {};
+  ids.forEach(id => { const m = getMovie(id); if(m && m.genre && m.genre !== "—") gc[m.genre] = (gc[m.genre]||0) + 1; });
+  const topGenre = Object.entries(gc).sort((a,b) => b[1]-a[1])[0] || null;
+
+  const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthCounts = {};
+  ids.forEach(id => { const m = new Date(times[id]).getUTCMonth(); monthCounts[m] = (monthCounts[m]||0) + 1; });
+  const busiest = Object.entries(monthCounts).sort((a,b) => b[1]-a[1])[0];
+
+  const scores = ids.map(scoreOf);
+  const avg = scores.reduce((a,b) => a+b, 0) / scores.length;
+  const allScores = allRanked().map(scoreOf);
+  const allAvg = allScores.length ? allScores.reduce((a,b) => a+b, 0) / allScores.length : null;
+
+  const loved = ids.filter(id => bucketOf(id) === "loved").length;
+  const fine = ids.filter(id => bucketOf(id) === "fine").length;
+  const disliked = ids.filter(id => bucketOf(id) === "disliked").length;
+
+  return {
+    year, ids, n: ids.length, byType, top, topGenre,
+    busiestMonth: busiest ? MONTH_NAMES[+busiest[0]] : null,
+    avg, allAvg,
+    dist: [["Loved", loved, "var(--good)"], ["Fine", fine, "var(--mid)"], ["Not for me", disliked, "var(--bad)"]],
+  };
+}
+/* the entry card on the main profile screen — always shown (like the heat
+   map above, an honest empty state lives behind the tap rather than hiding
+   the door to it) */
+function profileWrapEntryHTML(){
+  return `<div class="sechead">Rewind</div>
+    <button class="wrapcard" id="wrapBtn">
+      <span class="wraplabel">REWIND • YOUR YEAR</span>
+      <span class="wc-title">Your ${new Date().getUTCFullYear()} on Reeli</span>
+      <span class="wc-sub">See your wrap-up →</span>
+    </button>`;
+}
+/* full-screen wrap-up sheet — same #sheet-fills-the-viewport pattern as
+   openFullProfile() (openSheet + sheet.classList.add("full")), not a new
+   screen/nav entry. */
+function openYearlyWrap(){
+  openSheet(yearlyWrapHTML());
+  sheet.classList.add("full");
+}
+function yearlyWrapHTML(){
+  const w = wrapYearStats(), year = new Date().getUTCFullYear();
+  const head = `<div class="fullhead"><button class="pillbtn soft" id="wrapClose" aria-label="Close your year on Reeli">✕ Close</button></div>
+    <span class="wraplabel">REWIND • YOUR YEAR</span>
+    <h1 class="h1">Your ${year} on Reeli</h1>`;
+  if(!w) return `<div class="fullprofile">${head}
+      <div class="empty"><p>Rank a few things and your wrap-up will show up here.</p></div>
+    </div>`;
+
+  const typeChips = TYPES.filter(t => w.byType[t].length)
+    .map(t => `<span class="chip">${esc(TYPE_LABEL[t])} · ${w.byType[t].length}</span>`).join("");
+  const podium = TYPES.filter(t => w.top[t]).map(t => {
+    const id = w.top[t], m = getMovie(id);
+    return `<div class="sechead">${esc(TYPE_LABEL[t])} of the year</div><div class="card">
+        <button class="row" data-open="${id}">
+          <span class="rankno">🏆</span>${posterHTML(m,"p-sm")}
+          <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+          ${scoreHTML(scoreOf(id))}</button></div>`;
+  }).join("");
+  const avgCompare = w.allAvg != null ? `<div class="sechead">Average score</div>
+    <div class="stats" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+      <div class="stat"><div class="n">${w.avg.toFixed(1)}</div><div class="l">This year</div></div>
+      <div class="stat"><div class="n">${w.allAvg.toFixed(1)}</div><div class="l">All-time</div></div>
+    </div>` : "";
+
+  return `<div class="fullprofile">${head}
+    <p class="sub">${w.n} title${w.n === 1 ? "" : "s"} ranked this year${w.busiestMonth ? " — busiest in " + esc(w.busiestMonth) : ""}.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">${w.n}</div><div class="l">Ranked</div></div>
+      ${w.topGenre ? `<div class="stat"><div class="n" style="font-size:14px">${esc(w.topGenre[0])}</div><div class="l">Top genre</div></div>` : ""}
+      ${w.busiestMonth ? `<div class="stat"><div class="n" style="font-size:14px">${esc(w.busiestMonth)}</div><div class="l">Busiest month</div></div>` : ""}
+    </div>
+    ${typeChips ? `<div class="sechead">By type</div><div class="chips" style="margin-bottom:16px">${typeChips}</div>` : ""}
+    ${podium}
+    <div class="sechead">Your ${year} taste</div>
+    <div class="card" style="padding:14px">
+      ${w.dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
+        <span class="bar"><span class="fill" style="width:${Math.round(c/w.n*100)}%;background:${col}"></span></span>
+        <span class="cnt">${c}</span></div>`).join("")}
+    </div>
+    ${avgCompare}
+    <button class="pillbtn acc" id="wrapShare" style="margin-top:18px;width:100%;padding:12px">Share my wrap-up</button>
+  </div>`;
+}
+/* mirrors shareTopFive()'s URL logic exactly — a cloud profile shares a
+   permalink, a guest/local-only user shares the marketing homepage */
+function shareYearlyWrap(){
+  const w = wrapYearStats(), year = new Date().getUTCFullYear();
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  if(!w){ openShare(`My ${year} on Reeli 🎬\nJust getting started — what's your wrap-up?`, url); return; }
+  const topId = TYPES.map(t => w.top[t]).find(Boolean);
+  const bits = [`${w.n} title${w.n === 1 ? "" : "s"} ranked`];
+  if(topId) bits.push(`Top pick: ${getMovie(topId).title} (${scoreOf(topId).toFixed(1)})`);
+  if(w.topGenre) bits.push(`Favorite genre: ${w.topGenre[0]}`);
+  openShare(`My ${year} on Reeli 🎬\n${bits.join(" · ")}\nWhat's your wrap-up?`, url);
+}
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -2404,6 +2567,7 @@ function profileHTML(d){
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
     ${profileHeatmapHTML()}
+    ${profileWrapEntryHTML()}
     ${profilePodiumHTML()}
     ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
@@ -2858,6 +3022,9 @@ const CLICK_IDS = {
   lbAuto:         () => runLetterboxdAuto(),
   lbManual:       () => runLetterboxdManual(),
   shareBtn:       () => shareTopFive(),
+  wrapBtn:        () => openYearlyWrap(),
+  wrapClose:      () => closeSheet(),
+  wrapShare:      () => shareYearlyWrap(),
   resetBtn:       () => resetEverything(),
   shareProfBtn:   () => openShare("Check my movie taste on Reeli 🎬",
                       location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle)),
