@@ -468,6 +468,24 @@
     background-color:var(--bg);background-size:cover;background-position:center top}
   .fullhead{display:flex;justify-content:flex-end;margin-bottom:12px}
 
+  /* milestone celebrations: first ranking / 50th / one-year anniversary.
+     Same .fullprofile shell as the full profile and yearly wrap-up, plus a
+     confetti burst confined to the top of the screen and a scoreIn-style pop
+     on the headline — the one place besides the result sheet that earns a
+     bigger entrance than riseIn's quiet fade. */
+  .milestone{position:relative;overflow:hidden}
+  .milestone .h1{animation:scoreIn .4s cubic-bezier(.2,1.6,.4,1) both}
+  .milestone .sub{color:var(--muted);font-size:13.5px;line-height:1.5;margin:8px 0 0}
+  .milestone .stats{margin-top:18px}
+  .confetti{position:absolute;left:0;right:0;top:0;height:200px;overflow:hidden;pointer-events:none}
+  .confetti-piece{position:absolute;top:-16px;width:7px;height:13px;border-radius:2px;opacity:.9;
+    animation-name:confettiFall;animation-timing-function:ease-in;animation-fill-mode:forwards}
+  @keyframes confettiFall{from{transform:translateY(0) rotate(0deg);opacity:.95}to{transform:translateY(360px) rotate(300deg);opacity:0}}
+  @media (prefers-reduced-motion:reduce){
+    .confetti-piece{animation:none;opacity:0}
+    .milestone .h1{animation:none}
+  }
+
   /* rate flow */
   .buckets{display:grid;gap:10px;margin-top:14px}
   .bucket{display:flex;align-items:center;gap:12px;border-radius:12px;padding:14px;border:1.5px solid var(--line);background:var(--surface);text-align:left;
