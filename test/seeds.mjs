@@ -96,6 +96,17 @@ export function makeSeed(i, DB){
     myFeed.push(item);
   }
 
+  /* rankTimes: a per-movie last-known ranking timestamp, but only for a slice
+     of already-ranked ids — mirrors production, where a real date is only
+     known for some rankings (recently placed, or backfilled from a cloud
+     pull), never the entire history. Index-derived, like `legacy` above, so
+     this doesn't consume the rng and reshuffle any other seed's draws. */
+  const rankTimes = {};
+  all.forEach((id, idx) => {
+    if((i + idx) % 3 === 0)
+      rankTimes[id] = `2026-${String(1 + (i + idx) % 12).padStart(2, "0")}-${String(1 + (i * 7 + idx * 13) % 27).padStart(2, "0")}T00:00:00Z`;
+  });
+
   const people = [];
   for(let p = 0; p < Math.floor(r() * 4); p++)
     people.push({id: "p" + p, handle: pick(["a_b", "zoe"]), name: pick(NASTY) || "P",
@@ -110,7 +121,9 @@ export function makeSeed(i, DB){
       taste: r() < .6 ? {genres: [pick(["Drama", "Sci-Fi", pick(NASTY)])], dirs: r() < .5 ? [pick(["Wes Anderson", pick(NASTY)])] : []} : null,
       loved, fine, disliked, watch, custom,
       likes: {me0: r() < .5, me1: r() < .5},
-      notes, myFeed, feedSeen: "", notifSeen: "",
+      dislikes: {me2: r() < .3},
+      rewatches: Object.fromEntries(all.filter(() => r() < .25).map(id => [id, 1 + Math.floor(r() * 4)])),
+      notes, myFeed, feedSeen: "", notifSeen: "", rankTimes,
       /* also index-derived, for the same reason as `legacy` above */
       lbQueue: i % 4 === 1 ? all.slice(0, i % 3) : [],
       ui: {accent: r() < .5 ? null : pick([355, 42, 218, 275, 105]), wall: r() < .5 ? null : "tt0068646", wallTitle: r() < .5 ? null : pick(NASTY)},
@@ -121,6 +134,7 @@ export function makeSeed(i, DB){
       profileLoaded: authed && r() < .8,
       follows: people.filter(() => r() < .5).map(p => p.id),
       feed, myLikes: feed.filter(() => r() < .5).map(f => f.userId + "|" + f.movie),
+      myDislikes: feed.filter(() => r() < .2).map(f => f.userId + "|" + f.movie),
       feedLoaded: r() < .5, notifs: [],
     },
     posters: Object.fromEntries(all.filter(() => r() < .4).map(id => [id, r() < .5 ? "https://p/" + id + "?a=1&b=2" : {u: "https://p/" + id, tt: "tt" + (1000000 + Math.floor(r() * 9e6))}])),
@@ -154,6 +168,7 @@ export function apply(B, seed){
   C.follows = new Set(seed.CLOUD.follows);
   C.feed = JSON.parse(JSON.stringify(seed.CLOUD.feed));
   C.myLikes = new Set(seed.CLOUD.myLikes);
+  C.myDislikes = new Set(seed.CLOUD.myDislikes);
   C.feedLoaded = seed.CLOUD.feedLoaded;
   C.notifs = [];
   for(const k of Object.keys(T.LIVE)) delete T.LIVE[k];

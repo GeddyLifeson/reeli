@@ -2,8 +2,16 @@
 <html lang="en">
 <meta charset="utf-8">
 <title>Reeli — rank every movie you've seen</title>
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0E6B5C">
+<!-- "Add to Home Screen" on iOS ignores the manifest's display:standalone
+     without these — omitting them means the installed icon opens inside
+     Safari's own chrome instead of full-screen. mobile-web-app-capable is
+     the (non-Apple-prefixed) equivalent recognized by Chrome/Android and
+     other Chromium-based browsers. -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="description" content="Reeli is Beli for movies: rank every film you've seen in head-to-head matchups — no star ratings — then follow your Reelmates, compare taste, and swap hot takes.">
 <meta name="google-site-verification" content="FcWbi3D38FNkUqmb4DM6b851-CtJQJit_0riy9w-eXg">
 <link rel="canonical" href="https://reeli.org/">

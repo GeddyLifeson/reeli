@@ -108,12 +108,20 @@ function seed(){
     watch:[],
     custom:[],
     likes:{},
+    dislikes:{},
+    rewatches:{},
     notes:{},
     myFeed:[],
     feedSeen:"",
     notifSeen:"",
     lbQueue:[],
     ui:{accent:null, wall:null, wallTitle:null},
+    // id -> ISO timestamp of the last time that movie was (re)ranked. Stamped
+    // by placeAt() going forward and backfilled from Supabase's
+    // rankings.updated_at/created_at by pullRankings() for signed-in users —
+    // see the comment above profileHeatmapHTML() for why this is the only
+    // honest source of per-ranking dates the app has.
+    rankTimes:{},
   };
 }
 function load(){
@@ -127,6 +135,9 @@ function load(){
         if(!("taste" in s)) s.taste = null;
         if(!("guestChosen" in s)) s.guestChosen = false;
         if(!s.notes) s.notes = {};
+        if(!s.dislikes) s.dislikes = {};
+        if(!s.rewatches) s.rewatches = {};
+        if(!s.rankTimes) s.rankTimes = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
@@ -186,13 +197,24 @@ function ensureSaved(id){
    head-to-head never pits a movie against a show, and "top 10" means top 10
    of that one type. TYPES lists every pool; typeOf() says which one an id
    belongs to, straight off the movie's `kind` (unset/"movie" -> "movie",
-   "show" -> "show", "anime" -> "anime"). */
+   "show" -> "show", "anime" -> "anime").
+
+   Fallback: an "al:" id is unambiguously AniList regardless of `kind` — that
+   prefix exists specifically so anime ids never collide with an IMDb tt-id
+   (see the AniList section below). Rankings/custom entries saved before the
+   anime split shipped (or a cloud row pulled while `getMovie` already
+   resolved to some other stale entry lacking `kind`) can end up with no
+   `kind` at all; without this fallback those items silently misclassify as
+   "movie" forever and never show up under the Anime tab or podium, even
+   though their id already says exactly what they are. */
 const TYPES = ["movie", "show", "anime"];
 const TYPE_LABEL = { movie:"Movies", show:"TV Shows", anime:"Anime" };
 function typeOf(id){
   const m = getMovie(id);
   const k = m && m.kind;
-  return k === "show" || k === "anime" ? k : "movie";
+  if(k === "show" || k === "anime") return k;
+  if(typeof id === "string" && id.startsWith("al:")) return "anime";
+  return "movie";
 }
 /* "1 movie" / "3 shows" / "3 anime" — anime doesn't pluralize */
 function typeNoun(type, n){
@@ -253,7 +275,31 @@ function scoreOf(id){
 }
 function rankOf(id){ return rankedIndex(typeOf(id)).pos.get(id) || 0; }
 function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
-function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
+// also drops the ranking's known timestamp — a re-rank (pickBucket) puts a
+// fresh one right back via placeAt(); an actual unrank should not leave a
+// stale date behind for a movie that's no longer ranked
+function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); if(S.rankTimes) delete S.rankTimes[id]; }
+
+/* Tiebreaker: once an item is placed by the binary-search flow, nothing ever
+   makes it compete again — two movies that happened to land one slot apart
+   can sit at nearly the same score indefinitely, even if a rematch would flip
+   them. This is a pure scan for candidates worth re-asking about: adjacent
+   (same bucket, same media type) pairs whose scores are suspiciously close.
+   Capped at TIEBREAK_CAP so a big list doesn't turn into a wall of prompts —
+   the Ranks screen only ever surfaces the first pair at a time anyway. */
+const TIEBREAK_MAX_GAP = 0.2, TIEBREAK_CAP = 3;
+function findTiebreakers(type){
+  const arrs = rankedIndex(type).arrs;
+  const out = [];
+  for(const b of ["loved","fine","disliked"]){
+    const arr = arrs[b];
+    for(let i = 0; i < arr.length - 1 && out.length < TIEBREAK_CAP; i++){
+      const idA = arr[i], idB = arr[i + 1];
+      if(Math.abs(scoreOf(idA) - scoreOf(idB)) <= TIEBREAK_MAX_GAP) out.push([idA, idB]);
+    }
+  }
+  return out;
+}
 
 /* ---------- helpers ---------- */
 const $ = sel => document.querySelector(sel);
@@ -372,6 +418,7 @@ function aniToMovie(r){
     genre: (r.genres && r.genres[0]) || "", dir: "", hue: hash,
     poster: r.coverImage && r.coverImage.large || null,
     desc: r.description ? r.description.replace(/<[^>]+>/g, "").trim() : null,
+    format: r.format || "", episodes: r.episodes || null,
     kind: "anime", enriched: true };
 }
 function anilistSearch(term, cb){
@@ -384,8 +431,20 @@ function anilistTrending(cb){
     `query{Page(page:1,perPage:14){media(type:ANIME,sort:TRENDING_DESC){${ANILIST_FIELDS}}}}`,
     {}, d => cb(d ? d.Page.media.map(aniToMovie) : null));
 }
-/* one-line meta under a title: skip blanks */
-function mline(m){ return [m.year, m.genre, m.dir].filter(x => x && x !== "—").join(" · "); }
+/* AniList's `format` enum, prettied up for display. TV is the overwhelming
+   majority of anime and is redundant on a tab already labeled "Anime", so it
+   renders as nothing; everything else (OVA/ONA/SPECIAL are already
+   fan-legible in caps) just gets title-cased where that reads better. */
+const ANI_FORMAT_LABEL = { TV:"", TV_SHORT:"TV Short", MOVIE:"Movie", SPECIAL:"Special", OVA:"OVA", ONA:"ONA", MUSIC:"Music" };
+/* one-line meta under a title: skip blanks. Anime items splice in episode
+   count and format (both AniList-only fields) right after the genre. */
+function mline(m){
+  const extra = m.kind === "anime"
+    ? [Number.isInteger(m.episodes) && m.episodes > 0 ? `${m.episodes} eps` : "",
+       ANI_FORMAT_LABEL[m.format] || ""]
+    : [];
+  return [m.year, m.genre, m.dir, ...extra].filter(x => x && x !== "—").join(" · ");
+}
 /* fill in description/rating/runtime for ANY movie: catalog ids go straight
    to the meta endpoint; built-in/custom titles resolve their IMDb id first
    (reusing the poster cache's stored id when available) */
@@ -622,7 +681,9 @@ fetch(SUPA_URL + pgPath("profiles", {select:"avatar_url", limit:1}),
   .catch(e => logErr("avatar_url column probe", e));
 let AUTH = null;
 try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){ logErr("reading the saved session", e); }
-const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), notifs:[] };
+/* parties: every watch party you're in, keyed by the OTHER person's id
+   (whichever side of the owner/partner row you're on) — see pullWatchParties() */
+const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), myDislikes:new Set(), notifs:[], parties:new Map() };
 function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){ logErr("saving the session", e); } }
 function authed(){ return !!(AUTH && AUTH.access_token); }
 function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
@@ -855,6 +916,14 @@ async function pullRankings(){
   const tsByMovie = {};
   rows.forEach(r => { tsByMovie[r.movie_id] = r.updated_at || r.created_at; });
   S.myFeed.forEach(f => { if(!f.ts && tsByMovie[f.movie]) f.ts = tsByMovie[f.movie]; });
+  // same map, kept permanently (not just on the 6 most recent feed items) as
+  // S.rankTimes so the activity heat map has real per-ranking dates for a
+  // signed-in user's whole history, not just what's still in S.myFeed. This is
+  // "last touched" per movie (updated_at wins over created_at) rather than
+  // "first ranked" — a re-rank already counts as fresh activity everywhere
+  // else in the app (see touchRanking()), so the heat map treats it the same
+  // way: one day's worth of credit, on whichever day it most recently moved.
+  for(const id in tsByMovie) if(tsByMovie[id]) S.rankTimes[id] = tsByMovie[id];
 }
 async function pullWatchlist(){
   const wl = await sb(pgPath("watchlist", {user_id:pgEq(myId()), select:"*", order:"added_at.desc"}));
@@ -884,6 +953,37 @@ async function pullLikes(){
   const lk = await sb(pgPath("likes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
   CLOUD.myLikes = lk.ok ? new Set((await lk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
 }
+/* dislikes are a private "not for me" signal, not a public tally — no count is
+   ever shown, and unlike likes they don't feed the feed or the hot-takes sort.
+   The table only exists so the toggle survives a reload/another device. */
+async function pullDislikes(){
+  const dk = await sb(pgPath("dislikes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
+  CLOUD.myDislikes = dk.ok ? new Set((await dk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
+}
+/* how many times you've logged rewatching each of your own ranked titles —
+   an append-only log server-side (one row per watch), collapsed to a count
+   per movie for local state, same shape as S.rewatches so a guest's local
+   tally and a signed-in pull look identical to everything that reads it */
+async function pullRewatches(){
+  const rw = await sb(pgPath("rewatches", {user_id:pgEq(myId()), select:"movie_id"}));
+  if(!rw.ok) return;
+  const counts = {};
+  (await rw.json()).forEach(x => { counts[x.movie_id] = (counts[x.movie_id] || 0) + 1; });
+  S.rewatches = counts;
+}
+/* every watch party you're in, whichever side of the owner/partner row you're
+   on. Unlike everything else pullCloud() reads, watch parties have no local
+   S.* mirror at all — party membership only ever makes sense for a signed-in
+   user looking at a Reelmate, so there's nothing for a guest to carry across
+   a login the way S.watch or S.loved do. This just warms CLOUD.parties so the
+   "Start a watch party" / "Watch party ✓" button on a profile sheet can
+   render synchronously instead of firing a query per profile opened. */
+async function pullWatchParties(){
+  const me = myId();
+  const r = await sb(pgPath("watch_parties", {select:"*", or:`(owner.eq.${pgVal(me)},partner.eq.${pgVal(me)})`}));
+  if(!r.ok) return;
+  CLOUD.parties = new Map((await r.json()).map(p => [p.owner === me ? p.partner : p.owner, p]));
+}
 async function pullCloud(){
   if(!authed()) return;
   PULLING = true;
@@ -897,6 +997,9 @@ async function pullCloud(){
     step = "rankings";  await pullRankings();
     step = "watchlist"; await pullWatchlist();
     step = "likes";     await pullLikes();
+    step = "dislikes";  await pullDislikes();
+    step = "rewatches"; await pullRewatches();
+    step = "parties";   await pullWatchParties();
     save();
   }catch(e){ logErr("pullCloud/" + step, e); }
   PULLING = false;
@@ -1041,19 +1144,43 @@ async function toggleCloudLike(userId, movieId, btn){
     CLOUD.myLikes.delete(key);
     await sb(pgPath("likes", {user_id:pgEq(myId()), ranking_user:pgEq(userId),
       ranking_movie:pgEq(movieId)}), {method:"DELETE"});
+    bumpTakeLike(userId, movieId, -1);
   } else {
     CLOUD.myLikes.add(key);
+    if(CLOUD.myDislikes.has(key)) await toggleCloudDislike(userId, movieId); // liking clears a prior dislike
     await sb(pgPath("likes"), {method:"POST",
       body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
+    bumpTakeLike(userId, movieId, 1);
   }
   refreshCloudFeed();
+}
+/* dislike mirrors like exactly, except there's no count anywhere to refresh —
+   it's a private "not for me" toggle, not a second public tally. Liking and
+   disliking the same ranking are mutually exclusive, same as most apps that
+   ship both: each one clears the other first. */
+async function toggleCloudDislike(userId, movieId){
+  if(!authed()){ toast("Sign in to react to rankings"); openAuthSheet("login"); return; }
+  const key = userId + "|" + movieId;
+  const disliked = CLOUD.myDislikes.has(key);
+  if(disliked){
+    CLOUD.myDislikes.delete(key);
+    await sb(pgPath("dislikes", {user_id:pgEq(myId()), ranking_user:pgEq(userId),
+      ranking_movie:pgEq(movieId)}), {method:"DELETE"});
+  } else {
+    CLOUD.myDislikes.add(key);
+    if(CLOUD.myLikes.has(key)) await toggleCloudLike(userId, movieId); // disliking clears a prior like
+    await sb(pgPath("dislikes"), {method:"POST",
+      body: JSON.stringify({user_id:myId(), ranking_user:userId, ranking_movie:movieId})});
+  }
+  if(cur === "feed") renderFeed(); // no count involved, just the pressed state
+  bumpTakeLike(userId, movieId, 0); // ditto for a take's pressed state, if one's showing
 }
 
 /* ---- community scores on a movie: everyone's average + your Reelmates' takes ---- */
 async function loadCommunityScores(movieId){
   try{
     const r = await sb(pgPath("rankings", {movie_id:pgEq(movieId),
-      select:"score,note,user_id,profiles!rankings_user_id_fkey(" + PSEL + ")", limit:200}));
+      select:"score,note,user_id,updated_at,profiles!rankings_user_id_fkey(" + PSEL + ")", limit:200}));
     if(!r.ok) return;
     const all = await r.json();
     const others = all.filter(x => x.user_id !== myId());
@@ -1068,34 +1195,235 @@ async function loadCommunityScores(movieId){
       ["fine", all.filter(x => Number(x.score) >= 3.4 && Number(x.score) < 6.7).length],
       ["not for them", all.filter(x => Number(x.score) < 3.4).length],
     ].filter(b => b[1] > 0).map(b => `${b[1]} ${b[0]}`).join(" · ");
-    const mates = others.filter(x => CLOUD.follows.has(x.user_id));
-    wrap.innerHTML = `
+    const avgHTML = `
       <div class="sechead">On Reeli</div>
       <div class="card" style="padding:12px 14px;display:flex;align-items:center;gap:12px">
         ${scoreHTML(Math.round(avg*10)/10)}
         <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.45">
           Average of ${all.length} ranking${all.length===1?"":"s"}${mineIncluded ? " (including yours)" : ""}<br>${esc(bands)}</span>
-      </div>
-      ${mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
+      </div>`;
+    if(isRanked(movieId)){
+      // already rated it yourself: no more need to browse for opinions before
+      // committing, so the quick trusted-circle glance is enough
+      TAKES_CACHE = null;
+      const mates = others.filter(x => CLOUD.follows.has(x.user_id));
+      wrap.innerHTML = avgHTML + (mates.length ? `<div class="sechead">Your Reelmates say</div><div class="card">${mates.map(x => `
         <button class="row" data-cperson="${esc(x.user_id)}">
           ${avatarHTML(x.profiles.display_name, x.profiles.avatar_hue, x.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}
           <span class="meta"><span class="t" style="font-size:13px">${esc(x.profiles.display_name)}</span>
           ${x.note ? `<span class="d" style="white-space:normal">“${esc(x.note)}”</span>` : ""}</span>
           ${scoreHTML(Number(x.score))}
-        </button>`).join("")}</div>` : ""}`;
+        </button>`).join("")}</div>` : "");
+      return;
+    }
+    // haven't rated it yet: this is the moment hot takes earn their keep —
+    // everyone's take, not just Reelmates', so there's something to go on
+    // before committing to rank it yourself
+    const takers = others.filter(x => x.note);
+    const [lk, rc] = await Promise.all([
+      sb(pgPath("likes", {ranking_movie:pgEq(movieId), select:"ranking_user"})),
+      sb(pgPath("hot_take_replies", {ranking_movie:pgEq(movieId), select:"ranking_user"})),
+    ]);
+    const likeCounts = new Map();
+    if(lk.ok) (await lk.json()).forEach(x => likeCounts.set(x.ranking_user, (likeCounts.get(x.ranking_user)||0) + 1));
+    const replyCounts = new Map();
+    if(rc.ok) (await rc.json()).forEach(x => replyCounts.set(x.ranking_user, (replyCounts.get(x.ranking_user)||0) + 1));
+    if(document.getElementById("commWrap") !== wrap || detailId !== movieId) return; // sheet moved on during that second fetch
+    TAKES_CACHE = {movieId, rows: takers.map(x => ({...x,
+      likeCount: likeCounts.get(x.user_id) || 0, replyCount: replyCounts.get(x.user_id) || 0}))};
+    wrap.innerHTML = avgHTML + `<div id="takesInner">${takesSectionHTML()}</div>`;
   }catch(e){ logErr("loading community scores", e); }
+}
+
+/* ---- hot takes: everyone's note on a title you haven't rated yet, sorted
+   Hot (recent-like velocity — a small HN-style decay, not just a raw total,
+   so "hot" doesn't just mean "oldest and most-seen forever"), New, or Most
+   liked. Likes/dislikes on a take ARE likes/dislikes on that ranking — same
+   data-clike/data-cdislike attributes and toggle functions the feed uses,
+   just pointed at a different (user, movie) pair. */
+let takesSort = "hot", TAKES_CACHE = null;
+function takeHotScore(t){
+  const hrs = Math.max(0, (Date.now() - new Date(t.updated_at).getTime()) / 36e5);
+  return t.likeCount / Math.pow(hrs + 2, 1.5);
+}
+
+/* ---- debate threads: replies to a hot take, keyed by the same
+   (ranking_user, ranking_movie) pair likes/dislikes use. A thread is loaded
+   lazily the first time it's expanded and cached so re-opening it — or any
+   other like/dislike/reply re-rendering #takesInner elsewhere on the sheet —
+   doesn't refetch it. Capped to REPLY_PAGE so a viral take can't turn the
+   sheet into an unbounded list. */
+const REPLY_PAGE = 10;
+let OPEN_REPLIES = new Set();  // "<ranking_user>|<ranking_movie>" keys currently expanded
+let REPLY_CACHE = new Map();   // key -> fetched rows, once loaded
+let REPLY_LOADING = new Set(); // keys with a fetch in flight
+/* dashes are fine in a DOM id (unlike a data- attribute name, which the
+   delegation test's static scanner requires to be a single lowercase word) —
+   this just needs to be unique per take and stable across re-renders */
+function replyDomId(prefix, key){ return prefix + "-" + key.replace(/[^a-zA-Z0-9]/g, "-"); }
+function replyCountLabel(n){ return n > 0 ? n + " repl" + (n === 1 ? "y" : "ies") : "Reply"; }
+function findTake(key){
+  return TAKES_CACHE && TAKES_CACHE.rows.find(t => t.user_id + "|" + TAKES_CACHE.movieId === key);
+}
+/* the collapsible body under one take: existing replies (oldest first, capped)
+   plus a compose box, gated on authed() the same way liking/disliking is —
+   guests can read a thread but can't post into it. */
+function repliesBlockHTML(t){
+  const key = t.user_id + "|" + TAKES_CACHE.movieId;
+  const loading = REPLY_LOADING.has(key);
+  const rows = REPLY_CACHE.get(key);
+  if(loading && !rows) return `<p class="d" style="margin:8px 0 0">Loading replies…</p>`;
+  const list = rows || [];
+  const shown = list.slice(0, REPLY_PAGE), extra = list.length - shown.length;
+  return `
+    ${shown.length ? shown.map(r => `
+      <div class="tkreply">
+        ${avatarHTML(r.profiles.display_name, r.profiles.avatar_hue, r.profiles.avatar_url, "width:22px;height:22px;font-size:10px")}
+        <span class="meta">
+          <span class="t" style="font-size:12px">${esc(r.profiles.display_name)}</span>
+          <span class="d" style="white-space:normal">${esc(r.body)}</span>
+        </span>
+      </div>`).join("") : `<p class="d" style="margin:8px 0 0">No replies yet${authed() ? " — be the first." : "."}</p>`}
+    ${extra > 0 ? `<p class="d" style="margin:6px 0 0">+${extra} more</p>` : ""}
+    ${authed() ? `
+      <div class="tkreply-form">
+        <textarea class="field" id="${replyDomId("tki", key)}" maxlength="280" rows="2"
+          aria-label="Reply to ${esc(t.profiles.display_name)}'s take" placeholder="Add a reply…"></textarea>
+        <button class="pillbtn acc" id="${replyDomId("tkb", key)}" data-tkreplypost="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}">Post</button>
+      </div>` : `<p class="d" style="margin:8px 0 0">Sign in to reply.</p>`}`;
+}
+/* open/close a thread. Loading it is a separate, targeted fetch (loadReplies)
+   so toggling stays instant even before the network responds. */
+function toggleReplies(userId, movieId){
+  const key = userId + "|" + movieId;
+  if(OPEN_REPLIES.has(key)) OPEN_REPLIES.delete(key);
+  else{
+    OPEN_REPLIES.add(key);
+    if(!REPLY_CACHE.has(key)) loadReplies(userId, movieId);
+  }
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
+}
+/* fetches one thread and repaints only that take's reply node — never
+   #takesInner, never #commWrap, never the sheet — so it can't clobber a draft
+   reply someone's mid-typing in a different open thread, and doesn't cost a
+   community-scores round trip just to show a thread. */
+async function loadReplies(userId, movieId){
+  const key = userId + "|" + movieId;
+  if(REPLY_LOADING.has(key)) return;
+  REPLY_LOADING.add(key);
+  refreshReplyThread(key);
+  try{
+    const r = await sb(pgPath("hot_take_replies", {ranking_user:pgEq(userId), ranking_movie:pgEq(movieId),
+      select:"id,body,author,profiles!hot_take_replies_author_fkey(" + PSEL + ")", order:"created_at.asc", limit:200}));
+    REPLY_CACHE.set(key, r.ok ? await r.json() : []);
+  }catch(e){ logErr("loading replies", e); REPLY_CACHE.set(key, REPLY_CACHE.get(key) || []); }
+  REPLY_LOADING.delete(key);
+  refreshReplyThread(key);
+}
+function refreshReplyThread(key){
+  const t = findTake(key);
+  const wrap = t && document.getElementById(replyDomId("tkw", key));
+  if(wrap) wrap.innerHTML = repliesBlockHTML(t);
+}
+async function submitReply(userId, movieId){
+  if(!authed()){ toast("Sign in to reply"); openAuthSheet("login"); return; }
+  const key = userId + "|" + movieId;
+  const inp = document.getElementById(replyDomId("tki", key));
+  const body = inp ? inp.value.trim().slice(0, 280) : "";
+  if(!body) return;
+  const btn = document.getElementById(replyDomId("tkb", key));
+  if(btn){ btn.textContent = "…"; btn.disabled = true; }
+  try{
+    const r = await sb(pgPath("hot_take_replies"), {method:"POST",
+      body: JSON.stringify({ranking_user:userId, ranking_movie:movieId, author:myId(), body})});
+    if(!r.ok){ toast("Couldn't post — try again"); return; }
+    // optimistic local append, same idea as the rest of this file's
+    // TAKES_CACHE/likeCount updates — no need to refetch what we just sent
+    const me = CLOUD.profile || {};
+    const rows = REPLY_CACHE.get(key) || [];
+    rows.push({id: "local-" + Date.now(), body, author: myId(),
+      profiles: {handle: me.handle, display_name: me.display_name, avatar_hue: me.avatar_hue, avatar_url: me.avatar_url}});
+    REPLY_CACHE.set(key, rows);
+    const t = findTake(key);
+    if(t) t.replyCount = (t.replyCount || 0) + 1;
+    refreshReplyThread(key);
+    const cEl = document.getElementById(replyDomId("tkc", key));
+    if(cEl && t) cEl.textContent = replyCountLabel(t.replyCount);
+  }catch(e){ logErr("posting a reply", e); toast("Couldn't post — try again"); }
+  finally{ const b = document.getElementById(replyDomId("tkb", key)); if(b){ b.textContent = "Post"; b.disabled = false; } }
+}
+
+function takesSectionHTML(){
+  if(!TAKES_CACHE) return "";
+  const rows = TAKES_CACHE.rows.slice().sort((a, b) =>
+    takesSort === "new" ? new Date(b.updated_at) - new Date(a.updated_at)
+    : takesSort === "most" ? b.likeCount - a.likeCount
+    : takeHotScore(b) - takeHotScore(a));
+  return `
+    <div class="sechead">Hot takes</div>
+    <div class="segs" role="tablist" style="margin-bottom:10px">
+      ${[["hot","Hot"],["new","New"],["most","Most liked"]].map(([k,l]) =>
+        `<button class="seg ${takesSort===k?"cur":""}" data-tsort="${k}">${l}</button>`).join("")}
+    </div>
+    ${rows.length ? `<div class="card">${rows.map(t => {
+      const key = t.user_id + "|" + TAKES_CACHE.movieId;
+      const liked = CLOUD.myLikes.has(key), disliked = CLOUD.myDislikes.has(key);
+      // takers is always drawn from loadCommunityScores' `others`, which already
+      // excludes myId() — so no own take reaches this row, and no self-check
+      // is needed before offering to follow the person who wrote it
+      const following = CLOUD.follows.has(t.user_id);
+      const repliesOpen = OPEN_REPLIES.has(key);
+      return `<div class="row" style="align-items:flex-start">
+        <button data-person="${esc(t.user_id)}" style="padding:0;flex:none;border-radius:50%">
+          ${avatarHTML(t.profiles.display_name, t.profiles.avatar_hue, t.profiles.avatar_url, "width:30px;height:30px;font-size:12px")}</button>
+        <span class="meta">
+          <span class="t" style="font-size:13px">${esc(t.profiles.display_name)}</span>
+          <span class="d" style="white-space:normal">“${esc(t.note)}”</span>
+          <span class="facts" style="margin-top:6px">
+            <button data-clike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${liked?"liked":""}" aria-pressed="${liked}" aria-label="${liked?"Unlike":"Like"} ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="${liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg></button>
+            <button data-cdislike="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" class="${disliked?"disliked":""}" aria-pressed="${disliked}" aria-label="${disliked?"Remove dislike from":"Dislike"} ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="${disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
+            <button data-pfollow="${esc(t.user_id)}" class="iconbtn ${following?"on":""}" aria-pressed="${following}" aria-label="${following?"Remove":"Add"} ${esc(t.profiles.display_name)} as a Reelmate" title="${following?"Reelmate":"Add Reelmate"}">${following ? "✓" : "+"}</button>
+            <button data-tkreplies="${esc(t.user_id)}|${esc(TAKES_CACHE.movieId)}" aria-expanded="${repliesOpen}" aria-label="${repliesOpen?"Hide":"Show"} replies to ${esc(t.profiles.display_name)}'s take">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.4 8.4 0 0 1-8.4 8.4 8.3 8.3 0 0 1-3.9-.9L3 21l1.9-5.8a8.3 8.3 0 0 1-.9-3.9A8.4 8.4 0 0 1 12.4 3a8.4 8.4 0 0 1 8.4 8.4z"/></svg>
+              <span id="${replyDomId("tkc", key)}">${replyCountLabel(t.replyCount)}</span>
+            </button>
+          </span>
+          <div class="tkreplies" id="${replyDomId("tkw", key)}" ${repliesOpen?"":"hidden"}>${repliesOpen ? repliesBlockHTML(t) : ""}</div>
+        </span>
+        ${scoreHTML(Number(t.score))}
+      </div>`;
+    }).join("")}</div>` : `<div class="empty"><p>No hot takes yet — be the first to rank it and leave one.</p></div>`}`;
+}
+function resortTakes(sort){
+  takesSort = sort;
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
+}
+/* optimistic local update so a like/dislike on a take re-sorts "Hot"/"Most
+   liked" immediately, without a network round trip just to redraw a count
+   nothing server-side needed to change to know */
+function bumpTakeLike(userId, movieId, delta){
+  if(!TAKES_CACHE || TAKES_CACHE.movieId !== movieId) return;
+  const row = TAKES_CACHE.rows.find(t => t.user_id === userId);
+  if(row) row.likeCount = Math.max(0, row.likeCount + delta);
+  const el = document.getElementById("takesInner");
+  if(el) el.innerHTML = takesSectionHTML();
 }
 
 /* ---- public profile sheet: tap any person to see their list ---- */
 /* the person whose sheet is open, so the delegated [id] routes below can act
    on them without every button closing over a fresh copy */
 let SHEET_PERSON = null;
-async function openPerson(id){
-  SHEET_PERSON = null;
-  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+/* shared by openPerson (compact sheet) and openFullProfile (full-screen view):
+   fetches the profile row + up to 500 rankings and groups them by media_type.
+   Returns null if the profile couldn't be loaded. */
+async function loadPersonData(id){
   const pr = await sb(pgPath("profiles", {id:pgEq(id), select:"*"}));
   const p = pr.ok ? (await pr.json())[0] : null;
-  if(!p){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); return; }
+  if(!p) return null;
   const rr = await sb(pgPath("rankings", {user_id:pgEq(id), select:"*", order:"score.desc", limit:500}));
   const rows = rr.ok ? await rr.json() : [];
   rows.forEach(r => { if(!getMovie(r.movie_id)) LIVE[r.movie_id] = rowToMovie(r); });
@@ -1103,6 +1431,14 @@ async function openPerson(id){
   // each type's list is already sorted within itself — no re-sort needed
   const byType = {movie:[], show:[], anime:[]};
   rows.forEach(r => (byType[r.media_type] || byType.movie).push(r));
+  return {p, rows, byType};
+}
+async function openPerson(id){
+  SHEET_PERSON = null;
+  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+  const data = await loadPersonData(id);
+  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); return; }
+  const {p, rows, byType} = data;
   const overlap = rows.filter(r => isRanked(r.movie_id));
   const both = overlap.slice(0, 6);
   const match = overlap.length
@@ -1120,7 +1456,9 @@ async function openPerson(id){
         ${p.taste && p.taste.genres && p.taste.genres.length ? `<div class="chips" style="margin-top:8px">${p.taste.genres.slice(0,4).map(g => `<span class="chip" style="padding:4px 9px;font-size:11px">${esc(g)}</span>`).join("")}</div>` : ""}
         <div class="dactions">
           ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+          ${isMe ? "" : watchPartyBtnHTML(id)}
           <button class="pillbtn" id="pshare">Share</button>
+          <button class="pillbtn" id="pfull">View full profile</button>
         </div>
       </div>
       ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared title${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
@@ -1139,6 +1477,102 @@ async function openPerson(id){
       : `<div class="sechead">Their top rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}`);
   hydratePosters(sheet);
 }
+/* full-screen profile view: reuses the sheet/overlay machinery (openSheet/
+   closeSheet) rather than a 6th nav screen, just adds .full to #sheet so the
+   CSS fills the viewport instead of drawing a bottom drawer. Shows every
+   ranked title per type (capped at 30/type — plenty for a "full" view without
+   rendering an unbounded list for someone with hundreds of rankings), and
+   paints the *viewed person's* wallpaper via an inline style scoped to this
+   view only — applyUI()/S.ui must never be touched here, that's the
+   signed-in user's own wallpaper. */
+/* Turns someone else's fetched rows into the same shape profileData() computes
+   for your own — average, taste breakdown, top genres — so the full-profile
+   view can reuse the exact section markup your own Profile tab uses, just
+   fed from their rows instead of reading module-level S. (Their watchlist
+   count has no equivalent here: RLS makes public.watchlist readable only by
+   its owner, so "Queued" isn't something a visitor can ever know.) */
+function personProfileSummary(rows){
+  const scores = rows.map(r => Number(r.score));
+  const gc = {};
+  rows.forEach(r => { if(r.genre) gc[r.genre] = (gc[r.genre]||0) + 1; });
+  const loved = rows.filter(r => r.bucket === "loved").length;
+  const fine = rows.filter(r => r.bucket === "fine").length;
+  const disliked = rows.filter(r => r.bucket === "disliked").length;
+  return {
+    n: rows.length,
+    avg: scores.length ? (scores.reduce((a,b) => a+b, 0) / scores.length).toFixed(1) : "—",
+    topGenres: Object.entries(gc).sort((a,b) => b[1]-a[1]).slice(0, 5),
+    dist: [["Loved", loved, "var(--good)"], ["Fine", fine, "var(--mid)"], ["Not for me", disliked, "var(--bad)"]],
+    distN: rows.length || 1,
+    loved,
+  };
+}
+/* same "one podium per type" idea as profilePodiumHTML(), fed from someone
+   else's byType grouping instead of your own allRanked(t) */
+function personPodiumHTML(byType){
+  const medals = ["🥇","🥈","🥉"];
+  return TYPES.map(t => {
+    const rows = byType[t];
+    if(!rows.length) return "";
+    return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
+        rows.slice(0, 3).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+          <span class="rankno">${medals[i]}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
+          <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
+          ${scoreHTML(Number(r.score))}</button>`).join("")}</div>`;
+  }).join("");
+}
+async function openFullProfile(){
+  if(!SHEET_PERSON) return;
+  const id = SHEET_PERSON.id;
+  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
+  sheet.classList.add("full");
+  const data = await loadPersonData(id);
+  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); sheet.classList.add("full"); return; }
+  const {p, rows, byType} = data;
+  SHEET_PERSON = {id, handle: p.handle, name: p.display_name};
+  const sm = personProfileSummary(rows);
+  const wallStyle = p.ui && p.ui.wall
+    ? ` style="background-image:linear-gradient(var(--wallshade),var(--wallshade)),url('https://images.metahub.space/background/medium/${esc(p.ui.wall)}/img')"`
+    : "";
+  const following = CLOUD.follows.has(id), isMe = id === myId();
+  openSheet(`
+    <div class="fullprofile"${wallStyle}>
+      <div class="fullhead">
+        <button class="pillbtn soft" id="pfullClose" aria-label="Close full profile">✕ Close</button>
+      </div>
+      <div class="phead">
+        ${avatarHTML(p.display_name, p.avatar_hue, p.avatar_url)}
+        <div style="flex:1;min-width:0"><div class="pname">${esc(p.display_name)}</div>
+          <div class="phandle">@${esc(p.handle)}</div></div>
+      </div>
+      <div class="dactions" style="margin:10px 0 14px">
+        ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+        ${isMe ? "" : watchPartyBtnHTML(id)}
+        <button class="pillbtn" id="pshare">Share</button>
+      </div>
+      <div class="stats">
+        <div class="stat"><div class="n">${sm.n}</div><div class="l">Ranked</div></div>
+        <div class="stat"><div class="n">${sm.loved}</div><div class="l">Loved</div></div>
+        <div class="stat"><div class="n">${sm.avg}</div><div class="l">Avg</div></div>
+      </div>
+      ${p.taste && (p.taste.genres && p.taste.genres.length || p.taste.dirs && p.taste.dirs.length) ? `
+        <div class="sechead">Their taste</div>
+        <div class="chips" style="margin-bottom:14px">${[...(p.taste.genres||[]), ...(p.taste.dirs||[])].map(t => `<span class="chip">${esc(t)}</span>`).join("")}</div>` : ""}
+      ${rows.length ? `
+        <div class="sechead">Taste breakdown</div>
+        <div class="card" style="padding:14px">
+          ${sm.dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
+            <span class="bar"><span class="fill" style="width:${Math.round(c/sm.distN*100)}%;background:${col}"></span></span>
+            <span class="cnt">${c}</span></div>`).join("")}
+        </div>` : ""}
+      ${sm.topGenres.length ? `
+        <div class="sechead">Most-ranked genres</div>
+        <div class="chips">${sm.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>` : ""}
+      ${rows.length ? personPodiumHTML(byType) : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
+    </div>`, false);
+  sheet.classList.add("full");
+  hydratePosters(sheet);
+}
 /* follow/unfollow from an open profile sheet. CLOUD.follows is re-read here
    rather than captured, so a stale sheet can't invert the action. */
 function toggleSheetPerson(){
@@ -1151,6 +1585,129 @@ function shareSheetPerson(){
   if(!SHEET_PERSON) return;
   openShare(`${SHEET_PERSON.name}'s movie taste on Reeli 🎬`,
     location.origin + location.pathname + "?u=" + encodeURIComponent(SHEET_PERSON.handle));
+}
+
+/* ---------- watch party: a shared watchlist between two Reelmates ----------
+   Deliberately separate from the private, per-user watchlist above (S.watch /
+   public.watchlist) — that table is owner-only readable by design, so it can
+   never be the thing two people co-edit. A watch party is its own table pair
+   (see supabase-schema.sql), and unlike everything else in S/CLOUD it has no
+   local mirror at all: party membership only exists for a signed-in user
+   looking at a Reelmate's profile, so there's nothing to keep offline. */
+
+/* "Start a watch party" / "Watch party ✓" on an open profile sheet or full
+   profile. Cloud-only and Reelmate-only by nature, so it's gated on authed()
+   alone (never on d.cloud/CLOUD.profile) the same way other authed-only
+   affordances are — a guest viewing a public profile just doesn't see it. */
+function watchPartyBtnHTML(id){
+  if(!authed()) return "";
+  const has = CLOUD.parties.has(id);
+  return `<button class="pillbtn ${has ? "soft" : "acc"}" id="wpBtn">${has ? "Watch party ✓" : "Start a watch party"}</button>`;
+}
+/* re-reads CLOUD.parties/SHEET_PERSON at click time, same reasoning as
+   toggleSheetPerson(): a stale sheet must not create a second party. */
+function toggleSheetWatchParty(){
+  if(!SHEET_PERSON) return;
+  const {id, name} = SHEET_PERSON;
+  const existing = CLOUD.parties.get(id);
+  if(existing) openWatchParty(existing, name); else startWatchParty(id, name);
+}
+/* live existence check for one pair. CLOUD.parties is warmed once at login by
+   pullWatchParties(), so this is only a fallback for the case that cache
+   can't already answer — the other person started the party in this same
+   session, or the app never went through a login pull to begin with. */
+async function fetchPartyWith(otherId){
+  const me = myId();
+  const r = await sb(pgPath("watch_parties", {select:"*",
+    or:`(and(owner.eq.${pgVal(me)},partner.eq.${pgVal(otherId)}),and(owner.eq.${pgVal(otherId)},partner.eq.${pgVal(me)}))`}));
+  if(!r.ok) return null;
+  return (await r.json())[0] || null;
+}
+async function startWatchParty(otherId, otherName){
+  openSheet(`<div class="empty" style="padding:30px"><p>Starting a watch party…</p></div>`);
+  let party = CLOUD.parties.get(otherId) || await fetchPartyWith(otherId);
+  if(!party){
+    const r = await sb(pgPath("watch_parties"), {method:"POST", headers:{Prefer:"return=representation"},
+      body: JSON.stringify({owner: myId(), partner: otherId})});
+    if(r.ok) party = (await r.json())[0];
+    else if(r.status === 409) party = await fetchPartyWith(otherId); // lost a race with the other side
+  }
+  if(!party){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't start a watch party — try again.</p></div>`); return; }
+  CLOUD.parties.set(otherId, party);
+  toast("Watch party started 🎬");
+  openWatchParty(party, otherName);
+}
+let WATCH_PARTY = null; // {id, otherId, otherName, addOpen, items} — the party sheet currently open, if any
+async function openWatchParty(party, otherName){
+  WATCH_PARTY = {id: party.id, otherId: party.owner === myId() ? party.partner : party.owner,
+    otherName, addOpen: false, items: []};
+  renderWatchPartySheet(true);
+  const r = await sb(pgPath("watch_party_items", {party_id:pgEq(party.id), select:"*", order:"added_at.desc"}));
+  if(!WATCH_PARTY || WATCH_PARTY.id !== party.id) return; // sheet moved on while this was in flight
+  WATCH_PARTY.items = r.ok ? await r.json() : [];
+  renderWatchPartySheet();
+}
+/* modeled closely on renderWatch(): same .card/.row/poster/meta layout, just
+   sourced from WATCH_PARTY.items instead of S.watch, plus who-added-it and an
+   inline "add from your watchlist" panel instead of a search shortcut. */
+function renderWatchPartySheet(loading){
+  if(!WATCH_PARTY) return;
+  if(loading){ openSheet(`<div class="empty" style="padding:30px"><p>Loading watch party…</p></div>`); return; }
+  const {items, otherName, addOpen} = WATCH_PARTY, me = myId();
+  const rows = items.map(it => { const m = getMovie(it.movie_id) || rowToMovie(it);
+    return `<div class="row">
+      ${posterHTML(m,"p-sm")}
+      <button class="meta" data-open="${esc(it.movie_id)}" style="text-align:left;min-width:0">
+        <span class="t">${esc(it.title)}</span><span class="d">${esc(mline(m))} · added by ${it.added_by === me ? "you" : esc(otherName)}</span>
+      </button>
+      <button class="iconbtn" data-wpremove="${esc(it.movie_id)}" aria-label="Remove from watch party">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>`; }).join("");
+  const addCands = S.watch.map(getMovie).filter(m => m && !items.some(it => it.movie_id === m.id));
+  const addHTML = !addOpen ? "" : `<div class="sechead">Add from your watchlist</div>${
+    addCands.length ? `<div class="card">${addCands.map(m => `<div class="row">
+        ${posterHTML(m,"p-sm")}
+        <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span></span>
+        <button class="pillbtn acc" data-wpadd="${esc(m.id)}">Add</button>
+      </div>`).join("")}</div>`
+      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — bookmark something first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+  openSheet(`
+    <h1 class="h1">Watch party</h1>
+    <p class="sub">You and ${esc(otherName)}'s shared watchlist — anything either of you queues up here, you both see.</p>
+    <div style="margin-bottom:14px"><button class="pillbtn ${addOpen ? "soft" : "acc"}" id="wpAddToggle">${addOpen ? "Close" : "+ Add from watchlist"}</button></div>
+    ${addHTML}
+    ${items.length ? `<div class="card">${rows}</div>`
+      : `<div class="empty"><div class="big" aria-hidden="true">🎬</div><p>No titles yet — add something you both want to watch together.</p></div>`}`);
+}
+function toggleWatchPartyAdd(){
+  if(!WATCH_PARTY) return;
+  WATCH_PARTY.addOpen = !WATCH_PARTY.addOpen;
+  renderWatchPartySheet();
+}
+async function addToWatchParty(movieId){
+  if(!WATCH_PARTY) return;
+  const m = getMovie(movieId); if(!m) return;
+  const partyId = WATCH_PARTY.id, c = cacheEntry(movieId);
+  const row = {party_id: partyId, movie_id: movieId, title: m.title,
+    year: typeof m.year === "number" ? m.year : null, genre: m.genre || null, director: m.dir || null,
+    poster: m.poster || (c ? c.u : null), media_type: typeOf(movieId), added_by: myId()};
+  const r = await sb(pgPath("watch_party_items", {on_conflict:"party_id,movie_id"}),
+    {method:"POST", headers:{Prefer:"resolution=merge-duplicates,return=representation"}, body: JSON.stringify(row)});
+  if(!r.ok){ toast("Couldn't add to the watch party — try again"); return; }
+  if(!WATCH_PARTY || WATCH_PARTY.id !== partyId) return; // sheet moved on while this was in flight
+  const saved = (await r.json())[0] || row;
+  if(!WATCH_PARTY.items.some(it => it.movie_id === movieId)) WATCH_PARTY.items.unshift(saved);
+  toast("Added to the watch party 🎬");
+  renderWatchPartySheet();
+}
+async function removeFromWatchParty(movieId){
+  if(!WATCH_PARTY) return;
+  const partyId = WATCH_PARTY.id;
+  await sb(pgPath("watch_party_items", {party_id:pgEq(partyId), movie_id:pgEq(movieId)}), {method:"DELETE"});
+  if(!WATCH_PARTY || WATCH_PARTY.id !== partyId) return; // sheet moved on while this was in flight
+  WATCH_PARTY.items = WATCH_PARTY.items.filter(it => it.movie_id !== movieId);
+  toast("Removed from watch party");
+  renderWatchPartySheet();
 }
 
 /* ---- social sign-in (Supabase OAuth: works per-provider once configured in the dashboard) ---- */
@@ -1324,7 +1881,7 @@ function pickHue(el, attr){
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){ logErr("server-side logout (signing out locally anyway)", e); }
   saveAuth(null);
-  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.notifs = [];
+  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.myDislikes = new Set(); CLOUD.notifs = []; CLOUD.parties = new Map();
   setNotifBadge(0);
   S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
   showGate();
@@ -1343,18 +1900,23 @@ function feedItemData(f, idx){
        attr: `data-clike="${esc(f.userId)}|${esc(f.movie)}"`}
     : (() => { const key = "me" + idx, liked = !!S.likes[key];
         return {liked, n: (f.likes||0) + (liked?1:0), attr: `data-like="${key}"`}; })();
+  // dislikes never carry a count (n) — it's a private "not for me" toggle,
+  // not a second public tally, so there's nothing to add to what the server sent
+  const dislike = f.cloud
+    ? {disliked: CLOUD.myDislikes.has(f.userId + "|" + f.movie), attr: `data-cdislike="${esc(f.userId)}|${esc(f.movie)}"`}
+    : (() => { const key = "me" + idx; return {disliked: !!S.dislikes[key], attr: `data-dislike="${key}"`}; })();
   // local items now carry a real ts; render it relative. Fall back to any
   // legacy `time` string, then to "recently" for pre-fix entries.
   const localTime = f.ts ? relTime(f.ts) : (f.time || "recently");
   const sub = f.cloud
     ? `${esc(f.time)} · @${esc(f.handle || "")}`
     : `${esc(localTime)}${f.rank ? ` · #${f.rank} on your list` : ""}`;
-  return {f, m, who, like, sub, cloud: !!f.cloud};
+  return {f, m, who, like, dislike, sub, cloud: !!f.cloud};
 }
 function feedItemHTML(f, idx){
   const d = feedItemData(f, idx);
   if(!d) return "";
-  const {m, who, like} = d;
+  const {m, who, like, dislike} = d;
   const headInner = `
       ${avatarHTML(who.name, who.hue, who.url)}
       <div class="fwho"><b>${esc(who.name)}</b> ranked <b>${esc(m.title)}</b><br><span class="ftime">${d.sub}</span></div>
@@ -1373,6 +1935,8 @@ function feedItemHTML(f, idx){
       <button ${like.attr} class="${like.liked?"liked":""}" aria-pressed="${like.liked}" aria-label="${like.liked ? "Unlike" : "Like"} ${esc(m.title)}, ${like.n} ${like.n === 1 ? "like" : "likes"}">
         <svg width="15" height="15" viewBox="0 0 24 24" fill="${like.liked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 21C7 16.5 3 13.3 3 9.3 3 6.4 5.2 4.5 7.7 4.5c1.7 0 3.3.9 4.3 2.4 1-1.5 2.6-2.4 4.3-2.4 2.5 0 4.7 1.9 4.7 4.8 0 4-4 7.2-9 11.7z"/></svg>
         ${like.n}</button>
+      <button ${dislike.attr} class="${dislike.disliked?"disliked":""}" aria-pressed="${dislike.disliked}" aria-label="${dislike.disliked ? "Remove dislike from" : "Dislike"} ${esc(m.title)}">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="${dislike.disliked?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 14V4M17 4l-2.7-.8a6 6 0 0 0-3.4 0L7 4.4A2 2 0 0 0 5.6 6.2l-.9 5.6A2 2 0 0 0 6.7 14H10l-.9 3.6a1.7 1.7 0 0 0 3 1.4L15 15"/></svg></button>
       <button data-open="${m.id}">${isRanked(m.id) ? "Ranked ✓" : "Rank it too"}</button>
     </div>
   </article>`;
@@ -1477,6 +2041,11 @@ function toggleMate(id){
     if(p) p.following = !following;
     toast(following ? `Removed ${name}` : `${name} is now a Reelmate 🎟️`);
     renderFeed();
+    // the detail sheet's hot-takes list is an overlay renderFeed() doesn't
+    // know about — nudge it too, same targeted refresh bumpTakeLike uses,
+    // so a follow tapped from a hot take flips its pressed state right away
+    const takesEl = document.getElementById("takesInner");
+    if(takesEl) takesEl.innerHTML = takesSectionHTML();
   };
   following ? BACKEND.unfollow(id, done) : BACKEND.follow(id, done);
 }
@@ -1503,6 +2072,29 @@ function onMateQueryInput(mq){
 
 /* ---------- rankings ---------- */
 let rankFilter = "all", rankGenre = "", rankType = "movie";
+/* order-independent key for a pair: a swap flips which id is idA vs idB, so
+   dismissal (and "don't immediately re-ask after a swap") has to key off the
+   two ids together, not their current left/right order */
+function pairKey(a, b){ return a < b ? a + "|" + b : b + "|" + a; }
+/* pairs the user has already waved off (or already settled) this session —
+   not persisted, so a fresh load can surface them again, but it sticks for
+   as long as the tab stays open */
+let tiebreakDismissed = new Set();
+/* dismissible card above the tabs on the Ranks screen, only for rankType's
+   own close calls; empty string (nothing rendered) once there are none left,
+   same pattern as profileGenresHTML */
+function tiebreakBannerHTML(){
+  const pairs = findTiebreakers(rankType).filter(([a, b]) => !tiebreakDismissed.has(pairKey(a, b)));
+  if(!pairs.length) return "";
+  const [idA, idB] = pairs[0], n = pairs.length;
+  return `<div class="tiebreak">
+    <p><b>${n} close call${n === 1 ? "" : "s"}</b> in your ${esc(TYPE_LABEL[rankType])} list — two ${esc(typeNoun(rankType, 2))} landed almost tied. Worth a rematch?</p>
+    <div class="tbbtns">
+      <button class="pillbtn acc" data-tiebreak="${idA}|${idB}">Settle it</button>
+      <button class="iconbtn" data-tbdismiss="${idA}|${idB}" aria-label="Dismiss">✕</button>
+    </div>
+  </div>`;
+}
 function renderRanks(){
   const tabs = `<div class="segs" role="tablist">
     ${TYPES.map(t => `<button class="seg ${rankType===t?"cur":""}" data-rtype="${t}">${TYPE_LABEL[t]} (${allRanked(t).length})</button>`).join("")}
@@ -1536,7 +2128,7 @@ function renderRanks(){
           `<button class="seg ${rankFilter===k?"cur":""}" data-filter="${k}">${l}</button>`).join("")}
       </div>
       ${genres.length >= 2 ? `<div class="segs" style="margin-top:-6px">
-        ${genres.map(g => `<button class="seg ${rankGenre===g?"cur":""}" data-gfilter="${esc(g)}" style="padding:5px 11px;font-size:11.5px">${esc(g)}</button>`).join("")}
+        ${genres.map(g => `<button class="seg sm ${rankGenre===g?"cur":""}" data-gfilter="${esc(g)}">${esc(g)}</button>`).join("")}
       </div>` : ""}
       <div class="card">${rows || `<div class="empty"><p>Nothing matches this filter yet.</p></div>`}</div>`;
   }
@@ -1544,6 +2136,7 @@ function renderRanks(){
     <h1 class="h1">Your ranking</h1>
     <p class="sub">Every score is earned by head-to-head matchups — no gut-feel star ratings here.</p>
     ${tabs}
+    ${tiebreakBannerHTML()}
     ${body}`;
 }
 
@@ -1554,6 +2147,26 @@ function renderRanks(){
    is open is `searchType`; switching it re-runs trending/search for the new
    type from scratch. */
 let query = "", searchType = "movie", liveResults = [], liveState = "idle", liveT = null, liveSeq = 0;
+// client-side format filter for the Anime tab's trending/library lists — no
+// extra network request, since `.format` is already on every anime item
+let animeFormat = "all";
+/* pick the single loved movie to anchor "Because you loved X" on — the
+   highest-scored item in S.loved that's actually a movie (loved also holds
+   ranked shows/anime, which have no local library to recommend from). null
+   once the user hasn't loved a movie yet, and the section stays hidden. */
+function lovedMovieAnchor(){
+  const ids = S.loved.filter(id => typeOf(id) === "movie");
+  if(!ids.length) return null;
+  return ids.reduce((best, id) => scoreOf(id) > scoreOf(best) ? id : best);
+}
+/* similarity of a candidate to one specific loved movie — same genre/director
+   match weights tasteScore() uses, but anchored on that title's own
+   genre/director rather than the aggregate S.taste vector. tasteScore() is
+   folded in as a tiebreaker so, among equally-similar candidates, the ones
+   that also fit the user's broader taste sort first. */
+function similarityTo(anchor, m){
+  return (anchor.genre && m.genre === anchor.genre ? 2 : 0) + (anchor.dir && m.dir === anchor.dir ? 3 : 0);
+}
 function movieRowHTML(m){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
   return `<div class="row">
@@ -1570,6 +2183,7 @@ function movieRowHTML(m){
 function switchSearchType(t){
   if(t === searchType || !TYPES.includes(t)) return;
   searchType = t;
+  animeFormat = "all";
   liveResults = []; liveState = "idle"; liveSeq++;
   if(query.trim()) runLiveSearch(query.trim());
   renderSearch();
@@ -1600,10 +2214,7 @@ function loadTrending(type){
   const land = list => {
     TRENDING[type] = list;
     if(Array.isArray(list)) list.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
-    // the Shows tab also renders a trending-anime teaser, so anime data
-    // landing while Shows is open is as much a reason to redraw as its own type
-    const showsThisType = type === searchType || (type === "anime" && searchType === "show");
-    if(cur === "search" && !query.trim() && showsThisType) renderSearch();
+    if(cur === "search" && !query.trim() && type === searchType) renderSearch();
   };
   if(type === "movie"){
     getJSON(CINE + "/catalog/movie/top.json", d => {
@@ -1623,7 +2234,6 @@ function loadTrending(type){
 function renderSearch(){
   const q = query.trim().toLowerCase();
   loadTrending(searchType);
-  if(searchType === "show") loadTrending("anime"); // the Shows tab also surfaces a trending-anime teaser below its own list
   const tabs = `<div class="segs" role="tablist">
     ${TYPES.map(t => `<button class="seg ${searchType===t?"cur":""}" data-stype="${t}">${TYPE_LABEL[t]}</button>`).join("")}
   </div>`;
@@ -1636,8 +2246,19 @@ function renderSearch(){
     const rows = list.map(movieRowHTML).join("");
     const trend = TRENDING.movie;
     const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    // "Because you loved X" — anchored on one specific loved movie, not the
+    // abstract taste vector. Same pool the "Picked for your taste" list above
+    // already built; just re-scored against the anchor and excluded from it.
+    const anchorId = !q ? lovedMovieAnchor() : null;
+    const anchor = anchorId ? getMovie(anchorId) : null;
+    const anchorRows = anchor
+      ? pool.filter(m => !isRanked(m.id) && m.id !== anchor.id)
+          .sort((a,b) => similarityTo(anchor,b) - similarityTo(anchor,a) || tasteScore(b) - tasteScore(a))
+          .slice(0, 6).map(movieRowHTML).join("")
+      : "";
     body = `
       ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+      ${anchorRows ? `<div class="sechead">Because you loved ${esc(anchor.title)}</div><div class="card">${anchorRows}</div>` : ""}
       ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
       ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
   } else {
@@ -1648,27 +2269,36 @@ function renderSearch(){
     const customList = q
       ? customPool.filter(m => (m.title+" "+m.genre+" "+m.year).toLowerCase().includes(q))
       : customPool.filter(m => !isRanked(m.id));
-    const customRows = customList.map(movieRowHTML).join("");
     const trend = TRENDING[searchType];
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    // Anime-only format filter (TV/Movie/OVA/...), applied client-side to
+    // whatever's already loaded — only shown once 2+ distinct formats are
+    // actually present, same gating renderRanks() uses for its genre row.
+    const formats = searchType === "anime" && Array.isArray(trend)
+      ? [...new Set(trend.map(m => m.format).filter(Boolean))].sort() : [];
+    if(animeFormat !== "all" && !formats.includes(animeFormat)) animeFormat = "all";
+    const matchesFormat = m => animeFormat === "all" || m.format === animeFormat;
+    const formatFilterHTML = formats.length >= 2 ? `<div class="segs" style="margin-top:-6px">
+      ${["all", ...formats].map(f =>
+        `<button class="seg sm ${animeFormat===f?"cur":""}" data-afmt="${esc(f)}">${f === "all" ? "All" : esc(ANI_FORMAT_LABEL[f] || f)}</button>`).join("")}
+    </div>` : "";
+    const customRows = customList.filter(matchesFormat).map(movieRowHTML).join("");
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map(movieRowHTML).join("") : "";
     const trendEmpty = !q && !trendRows
       ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
         : ""
       : "";
-    // Shows tab only: a "Trending anime" teaser under Trending TV Shows — a
-    // taste of the Anime tab, not a merge of the two. Ranking still only ever
-    // happens against same-type rivals; tapping Rank here routes through the
-    // normal anime pool exactly like ranking from the Anime tab would.
-    let animeTeaser = "";
-    if(searchType === "show" && !q){
-      const at = TRENDING.anime;
-      const atRows = Array.isArray(at) ? at.filter(m => !isRanked(m.id)).slice(0, 5).map(movieRowHTML).join("") : "";
-      animeTeaser = atRows ? `<div class="sechead">Trending anime</div><div class="card">${atRows}</div>` : "";
-    }
+    // No local DB-equivalent catalog for shows/anime, so "Recommended" reuses
+    // the same trending array — re-sorted by taste match instead of plain
+    // trending order. The pool is capped at ~10-14 items, so some overlap
+    // with the Trending section above is an acceptable simplification.
+    const recRows = (!q && Array.isArray(trend))
+      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map(movieRowHTML).join("")
+      : "";
     body = `
+      ${formatFilterHTML}
       ${trendRows ? `<div class="sechead">Trending ${label}</div><div class="card">${trendRows}</div>` : trendEmpty}
-      ${animeTeaser}
+      ${recRows ? `<div class="sechead">${S.taste ? `Recommended ${label}` : "Suggestions for you"}</div><div class="card">${recRows}</div>` : ""}
       ${customRows ? `<div class="sechead">From your library</div><div class="card">${customRows}</div>` : ""}
       ${!q && !trendRows && !customRows && !trendEmpty ? `<div class="empty" style="padding:22px"><p>Search to find ${label}.</p></div>` : ""}`;
   }
@@ -1813,7 +2443,7 @@ function profileBannerHTML(d){
       <button class="pillbtn" id="loginBtn">Log in</button></div>`;
 }
 function profileStatsHTML(d){
-  return `<div class="stats" style="grid-template-columns:repeat(4,1fr)">
+  return `<div class="stats" style="grid-template-columns:repeat(4,minmax(0,1fr))">
       <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
       <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
       <div class="stat"><div class="n">${S.watch.length}</div><div class="l">Queued</div></div>
@@ -1859,6 +2489,336 @@ function profileGenresHTML(d){
   return `<div class="sechead">Most-ranked genres</div>
       <div class="chips">${d.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>`;
 }
+/* ---------- ranking activity heat map ----------
+   A GitHub-contributions-style calendar of how many rankings happened per day,
+   for roughly the last year.
+
+   DATA-SOURCE DECISION: per-item ranking dates mostly don't exist locally.
+   S.myFeed carries real ISO timestamps (placeAt() stamps them), but it's
+   capped to the 6 most recent placements — nowhere near a year of history.
+   Rather than fabricate dates for older rankings, this reads S.rankTimes: a
+   {movieId: ISO timestamp} map that, unlike myFeed, is never trimmed.
+     - placeAt() writes S.rankTimes[id] the moment a movie is (re)ranked on
+       this device, going forward from whenever this shipped.
+     - pullRankings() additionally backfills it, for signed-in users, from
+       Supabase's rankings.updated_at/created_at — real per-row dates that
+       already made the round trip to the server but previously went nowhere
+       once pulled. That gives a signed-in user's grid real history back to
+       whenever each ranking was created/touched in the cloud.
+   A guest (or a signed-in user before their first cloud pull) only has real
+   dates for whatever they rank from today onward, so their grid legitimately
+   starts sparse. That's shown honestly — via the empty state below when there
+   is no data at all, and via genuinely-empty (0-count) cells everywhere else —
+   never guessed at. */
+function rankDayCounts(){
+  const days = {};
+  let total = 0;
+  const times = S.rankTimes || {}; // legacy/fuzz-seeded states may predate this field
+  for(const id in times){
+    const t = times[id], d = t && new Date(t);
+    if(!t || isNaN(d)) continue;
+    const key = d.toISOString().slice(0, 10);
+    days[key] = (days[key] || 0) + 1;
+    total++;
+  }
+  return {days, total};
+}
+function profileHeatmapHTML(){
+  const {days, total} = rankDayCounts();
+  if(!total)
+    return `<div class="sechead">Ranking activity</div>
+      <div class="card" style="padding:14px">
+        <span class="d" style="color:var(--muted);font-size:12.5px">Your ranking history builds up here over time — keep ranking and a calendar of your activity shows up here.</span>
+      </div>`;
+  const WEEKS = 53; // ~a year, GitHub-style: full calendar weeks, Sun-Sat
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const weekEnd = new Date(today);
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + (6 - today.getUTCDay())); // this week's Saturday
+  const start = new Date(weekEnd);
+  start.setUTCDate(start.getUTCDate() - (WEEKS * 7 - 1));
+  let max = 0;
+  for(const k in days) if(days[k] > max) max = days[k];
+  // 4-step shade ramp off the app's own good/surface2 tokens — no new colours.
+  // Bucketed relative to this user's own busiest day, GitHub-style, rather
+  // than fixed counts (a 2-movie day means something different to someone who
+  // ranked 1 thing all year vs 40).
+  const SHADE = ["var(--surface2)",
+    "color-mix(in srgb, var(--good) 35%, var(--surface2))",
+    "color-mix(in srgb, var(--good) 65%, var(--surface2))",
+    "var(--good)"];
+  const level = c => !c ? 0 : c >= max ? 3 : c / max > 2/3 ? 2 : 1;
+  const cells = [];
+  for(let w = 0; w < WEEKS; w++){
+    for(let dow = 0; dow < 7; dow++){
+      const d = new Date(start); d.setUTCDate(d.getUTCDate() + w * 7 + dow);
+      if(d > today){ cells.push(`<div aria-hidden="true"></div>`); continue; } // this week, not reached yet
+      const key = d.toISOString().slice(0, 10), c = days[key] || 0;
+      const label = `${d.toLocaleDateString(undefined, {month:"short", day:"numeric", year:"numeric"})}: ${c ? c + " ranking" + (c === 1 ? "" : "s") : "no rankings"}`;
+      cells.push(`<div style="background:${SHADE[level(c)]}" title="${esc(label)}" aria-hidden="true"></div>`);
+    }
+  }
+  // the grid is a picture, not a set of controls — one role="img" summary
+  // carries the accessible name; per-cell `title`s are a bonus for mouse/
+  // trackpad users, not the primary accessible description
+  return `<div class="sechead">Ranking activity</div>
+    <div class="card" style="padding:14px">
+      <div class="heatwrap">
+        <div class="heatgrid" role="img" aria-label="${total} ranking${total === 1 ? "" : "s"} over the last year, shown as a daily calendar heat map">${cells.join("")}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;justify-content:flex-end;margin-top:8px">
+        <span class="d" style="color:var(--muted);font-size:10.5px">Less</span>
+        ${SHADE.map(s => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${s}" aria-hidden="true"></span>`).join("")}
+        <span class="d" style="color:var(--muted);font-size:10.5px">More</span>
+      </div>
+    </div>`;
+}
+/* ---------- taste twins: the Reeli users whose rankings line up closest
+   with yours ----------
+   There is no "browse all users" query available (rankings/likes/dislikes/
+   follows are all publicly SELECT-able, but profiles is too — no admin-only
+   directory to page through), so candidates are found the same way the rest
+   of the app finds cross-user signal: through rows you can already see.
+   Query public.rankings for movie_id IN (your own top-scored titles, capped
+   at 60 so the querystring stays sane) and user_id != you, then group the
+   results client-side by user_id. Whoever shares the most titles with you is
+   worth computing a match% for (same exact formula openPerson() uses for its
+   ring, reused verbatim rather than reinvented) — top 8 by overlap count,
+   scored, then trimmed to the best 5 by match%. A candidate needs at least 3
+   shared titles to count; a single shared title can produce a meaningless
+   100% "twin" and that's worse than showing nothing.
+   This only makes sense for a signed-in user with cloud rankings to compare
+   against (gated the same way every other cloud-only profile section is:
+   d.cloud, i.e. authed() && CLOUD.profile) and is fetched on demand, not on
+   every render — a render-snapshot fuzz run calls renderProfile() with no
+   network available, so the result lives in a module-level cache
+   (TASTE_TWINS: null until fetched, [] once fetched-but-nothing-worth-
+   showing, an array of twins once found) exactly like TAKES_CACHE gates
+   takesSectionHTML(). tasteTwinsHTML() below only ever reads that cache —
+   fetchTasteTwins() is the only thing allowed to populate it. */
+let TASTE_TWINS = null, TWINS_LOADING = false;
+async function fetchTasteTwins(){
+  if(TWINS_LOADING || !authed() || !CLOUD.profile) return;
+  TWINS_LOADING = true;
+  refreshTwinsSection();
+  try{
+    const myIds = allRanked().slice(0, 60); // top-scored titles only — keeps the `in.()` filter bounded
+    if(myIds.length < 3){ TASTE_TWINS = []; return; }
+    const r = await sb(pgPath("rankings", {movie_id:pgIn(myIds), user_id:pgNeq(myId()), select:"user_id,movie_id,score"}));
+    if(!r.ok) return; // leave TASTE_TWINS as-is so the button stays put for a retry
+    const byUser = new Map();
+    (await r.json()).forEach(row => {
+      if(!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+      byUser.get(row.user_id).push(row);
+    });
+    const candidates = [...byUser.entries()]
+      .filter(([, overlap]) => overlap.length >= 3)   // one shared title isn't a "twin", it's a coincidence
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 8)
+      .map(([user_id, overlap]) => ({
+        user_id, n: overlap.length,
+        // the exact match% formula openPerson() uses for its ring — reused, not reinvented
+        match: Math.min(99, Math.max(35, Math.round(97 - (overlap.reduce((a, x) => a + Math.abs(Number(x.score) - scoreOf(x.movie_id)), 0) / overlap.length) * 9))),
+      }))
+      .sort((a, b) => b.match - a.match)
+      .slice(0, 5);
+    if(!candidates.length){ TASTE_TWINS = []; return; }
+    const pr = await sb(pgPath("profiles", {id:pgIn(candidates.map(c => c.user_id)), select:"id,handle,display_name,avatar_hue,avatar_url"}));
+    const profiles = pr.ok ? await pr.json() : [];
+    const byId = new Map(profiles.map(p => [p.id, p]));
+    TASTE_TWINS = candidates.map(c => ({...c, profile: byId.get(c.user_id)})).filter(c => c.profile);
+  }catch(e){ logErr("finding taste twins", e); }
+  finally{ TWINS_LOADING = false; refreshTwinsSection(); }
+}
+/* targeted refresh, same idea as toggleMate()'s takesInner nudge — the fetch
+   above is kicked off from a button inside this section, so only this section
+   needs to redraw, not the whole profile screen (which would jump scroll) */
+function refreshTwinsSection(){
+  const el = document.getElementById("twinsSection");
+  if(el) el.innerHTML = tasteTwinsInnerHTML();
+}
+function tasteTwinsInnerHTML(){
+  if(TASTE_TWINS === null)
+    return `<div class="sechead">Taste twins</div>
+      <div class="card" style="padding:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5;flex:1;min-width:180px">See which Reeli users' rankings line up closest with yours.</span>
+        <button class="pillbtn acc" id="tasteTwinsBtn" ${TWINS_LOADING ? "disabled" : ""}>${TWINS_LOADING ? "Finding…" : "Find my taste twins"}</button>
+      </div>`;
+  if(!TASTE_TWINS.length) return ""; // fetched, but nobody cleared the 3-shared-title bar — skip silently
+  return `<div class="sechead">Taste twins</div>
+    <div class="card">${TASTE_TWINS.map(t => `<button class="row" data-person="${esc(t.user_id)}">
+      ${avatarHTML(t.profile.display_name, t.profile.avatar_hue, t.profile.avatar_url, "width:30px;height:30px;font-size:12px")}
+      <span class="meta"><span class="t" style="font-size:13px">${esc(t.profile.display_name)}</span>
+        <span class="d">@${esc(t.profile.handle)} · ${t.n} shared title${t.n===1?"":"s"}</span></span>
+      <span class="match">${t.match}%</span>
+    </button>`).join("")}</div>`;
+}
+function tasteTwinsHTML(d){
+  if(!d.cloud) return "";
+  return `<div id="twinsSection">${tasteTwinsInnerHTML()}</div>`;
+}
+/* ---------- yearly wrap-up: "your year on Reeli" ----------
+   Spotify-Wrapped-style highlight reel, built entirely from S.rankTimes (the
+   same durable {movieId: ISO timestamp} map the heat map above reads — see
+   its comment for where those dates come from and why they're trustworthy)
+   crossed with the existing per-type ranking primitives (allRanked/scoreOf/
+   typeOf/getMovie). No separate date-tracking or a new stats endpoint.
+
+   WINDOW CHOICE — calendar year, not a trailing-365-day window:
+     "Your 2026 on Reeli" reads like an actual year-in-review that closes at
+     Dec 31, the way Spotify Wrapped or a Letterboxd Year in Review does —
+     not a window whose boundary quietly slides depending on what day you
+     happen to open the app. A trailing-365-day window would also make the
+     card's headline stat ("your 2026 wrap-up") technically wrong for a chunk
+     of the year (mid-January still mostly showing last year's data).
+     Calendar-year is both the more honest label and the simpler rule.
+
+   DATE ARITHMETIC — deliberately all UTC (getUTCFullYear/getUTCMonth), never
+   local getFullYear/getMonth: every timestamp this reads was written with
+   Date.toISOString() (placeAt(), pullRankings()), i.e. already UTC, and the
+   heat map right above buckets days in UTC for the same reason. Matching that
+   convention means a ranking at 11pm UTC on Dec 31 doesn't land in next
+   year's wrap-up on a browser west of UTC (or the reverse near Jan 1).
+
+   IS Date.now()/new Date() SAFE HERE? Yes. It's only Workflow *scripts* that
+   may not touch the real clock — this is ordinary app code, same as
+   profileHeatmapHTML()'s `new Date()` two functions up. The one thing worth
+   checking was whether calling it here would make the 400-seed render fuzz
+   harness (test/render-snapshot.mjs) non-deterministic: it would not, for two
+   reasons. First, within a single test run every seed's markup is generated
+   back-to-back in milliseconds, so "the current year" can't change mid-run.
+   Second, test/seeds.mjs's rankTimes generator (search "rankTimes" there)
+   stamps every seeded date to a fixed "2026-..." string regardless of the
+   real clock, so the golden hash reflects a fixed year (2026) crossed with
+   whatever "the current year" resolves to when the snapshot is generated —
+   stable for any number of re-runs on the same day/year, and only ever needs
+   a `--update` (same as any other golden-snapshot change) if this is run for
+   the first time in a different real-world year than the snapshot was last
+   regenerated in. Verified by running test/render-snapshot.mjs twice in a
+   row before touching the golden hash: identical both times. */
+function wrapYearStats(){
+  const times = S.rankTimes || {}; // legacy/fuzz-seeded states may predate this field
+  const year = new Date().getUTCFullYear();
+  const ids = [];
+  for(const id in times){
+    const t = times[id], d = t && new Date(t);
+    if(!t || isNaN(d) || d.getUTCFullYear() !== year) continue;
+    if(!isRanked(id)) continue; // only items still on the list are score-able
+    ids.push(id);
+  }
+  if(!ids.length) return null;
+
+  const byType = {movie: [], show: [], anime: []};
+  ids.forEach(id => byType[typeOf(id)].push(id));
+
+  // this year's #1 per type: highest scoreOf() among that type's ranked
+  // items with a timestamp in the window (ties broken by allRanked() order,
+  // same as everywhere else scores are compared)
+  const top = {};
+  TYPES.forEach(t => {
+    if(!byType[t].length) return;
+    top[t] = byType[t].reduce((best, id) => scoreOf(id) > scoreOf(best) ? id : best);
+  });
+
+  const gc = {};
+  ids.forEach(id => { const m = getMovie(id); if(m && m.genre && m.genre !== "—") gc[m.genre] = (gc[m.genre]||0) + 1; });
+  const topGenre = Object.entries(gc).sort((a,b) => b[1]-a[1])[0] || null;
+
+  const MONTH_NAMES = ["January","February","March","April","May","June","July","August","September","October","November","December"];
+  const monthCounts = {};
+  ids.forEach(id => { const m = new Date(times[id]).getUTCMonth(); monthCounts[m] = (monthCounts[m]||0) + 1; });
+  const busiest = Object.entries(monthCounts).sort((a,b) => b[1]-a[1])[0];
+
+  const scores = ids.map(scoreOf);
+  const avg = scores.reduce((a,b) => a+b, 0) / scores.length;
+  const allScores = allRanked().map(scoreOf);
+  const allAvg = allScores.length ? allScores.reduce((a,b) => a+b, 0) / allScores.length : null;
+
+  const loved = ids.filter(id => bucketOf(id) === "loved").length;
+  const fine = ids.filter(id => bucketOf(id) === "fine").length;
+  const disliked = ids.filter(id => bucketOf(id) === "disliked").length;
+
+  return {
+    year, ids, n: ids.length, byType, top, topGenre,
+    busiestMonth: busiest ? MONTH_NAMES[+busiest[0]] : null,
+    avg, allAvg,
+    dist: [["Loved", loved, "var(--good)"], ["Fine", fine, "var(--mid)"], ["Not for me", disliked, "var(--bad)"]],
+  };
+}
+/* the entry card on the main profile screen — always shown (like the heat
+   map above, an honest empty state lives behind the tap rather than hiding
+   the door to it) */
+function profileWrapEntryHTML(){
+  return `<div class="sechead">Rewind</div>
+    <button class="wrapcard" id="wrapBtn">
+      <span class="wraplabel">REWIND • YOUR YEAR</span>
+      <span class="wc-title">Your ${new Date().getUTCFullYear()} on Reeli</span>
+      <span class="wc-sub">See your wrap-up →</span>
+    </button>`;
+}
+/* full-screen wrap-up sheet — same #sheet-fills-the-viewport pattern as
+   openFullProfile() (openSheet + sheet.classList.add("full")), not a new
+   screen/nav entry. */
+function openYearlyWrap(){
+  openSheet(yearlyWrapHTML());
+  sheet.classList.add("full");
+}
+function yearlyWrapHTML(){
+  const w = wrapYearStats(), year = new Date().getUTCFullYear();
+  const head = `<div class="fullhead"><button class="pillbtn soft" id="wrapClose" aria-label="Close your year on Reeli">✕ Close</button></div>
+    <span class="wraplabel">REWIND • YOUR YEAR</span>
+    <h1 class="h1">Your ${year} on Reeli</h1>`;
+  if(!w) return `<div class="fullprofile">${head}
+      <div class="empty"><p>Rank a few things and your wrap-up will show up here.</p></div>
+    </div>`;
+
+  const typeChips = TYPES.filter(t => w.byType[t].length)
+    .map(t => `<span class="chip">${esc(TYPE_LABEL[t])} · ${w.byType[t].length}</span>`).join("");
+  const podium = TYPES.filter(t => w.top[t]).map(t => {
+    const id = w.top[t], m = getMovie(id);
+    return `<div class="sechead">${esc(TYPE_LABEL[t])} of the year</div><div class="card">
+        <button class="row" data-open="${id}">
+          <span class="rankno">🏆</span>${posterHTML(m,"p-sm")}
+          <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+          ${scoreHTML(scoreOf(id))}</button></div>`;
+  }).join("");
+  const avgCompare = w.allAvg != null ? `<div class="sechead">Average score</div>
+    <div class="stats" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+      <div class="stat"><div class="n">${w.avg.toFixed(1)}</div><div class="l">This year</div></div>
+      <div class="stat"><div class="n">${w.allAvg.toFixed(1)}</div><div class="l">All-time</div></div>
+    </div>` : "";
+
+  return `<div class="fullprofile">${head}
+    <p class="sub">${w.n} title${w.n === 1 ? "" : "s"} ranked this year${w.busiestMonth ? " — busiest in " + esc(w.busiestMonth) : ""}.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">${w.n}</div><div class="l">Ranked</div></div>
+      ${w.topGenre ? `<div class="stat"><div class="n" style="font-size:14px">${esc(w.topGenre[0])}</div><div class="l">Top genre</div></div>` : ""}
+      ${w.busiestMonth ? `<div class="stat"><div class="n" style="font-size:14px">${esc(w.busiestMonth)}</div><div class="l">Busiest month</div></div>` : ""}
+    </div>
+    ${typeChips ? `<div class="sechead">By type</div><div class="chips" style="margin-bottom:16px">${typeChips}</div>` : ""}
+    ${podium}
+    <div class="sechead">Your ${year} taste</div>
+    <div class="card" style="padding:14px">
+      ${w.dist.map(([l,c,col]) => `<div class="distrow"><span class="lbl">${l}</span>
+        <span class="bar"><span class="fill" style="width:${Math.round(c/w.n*100)}%;background:${col}"></span></span>
+        <span class="cnt">${c}</span></div>`).join("")}
+    </div>
+    ${avgCompare}
+    <button class="pillbtn acc" id="wrapShare" style="margin-top:18px;width:100%;padding:12px">Share my wrap-up</button>
+  </div>`;
+}
+/* mirrors shareTopFive()'s URL logic exactly — a cloud profile shares a
+   permalink, a guest/local-only user shares the marketing homepage */
+function shareYearlyWrap(){
+  const w = wrapYearStats(), year = new Date().getUTCFullYear();
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  if(!w){ openShare(`My ${year} on Reeli 🎬\nJust getting started — what's your wrap-up?`, url); return; }
+  const topId = TYPES.map(t => w.top[t]).find(Boolean);
+  const bits = [`${w.n} title${w.n === 1 ? "" : "s"} ranked`];
+  if(topId) bits.push(`Top pick: ${getMovie(topId).title} (${scoreOf(topId).toFixed(1)})`);
+  if(w.topGenre) bits.push(`Favorite genre: ${w.topGenre[0]}`);
+  openShare(`My ${year} on Reeli 🎬\n${bits.join(" · ")}\nWhat's your wrap-up?`, url);
+}
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -1869,6 +2829,65 @@ function profilePodiumHTML(){
     return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
         ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
           <span class="rankno">${medals[i]}</span>${posterHTML(m,"p-sm")}
+          <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+          ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
+  }).join("");
+}
+/* franchise/collection mini-podiums, movies only (dir semantics + prefix
+   heuristics below don't map cleanly onto shows/anime). This is inherently
+   fuzzy, so we keep two independent signals and don't try to fuse them into
+   a real franchise database:
+     1) director groups — 3+ ranked movies sharing the same non-empty,
+        non-"—" .dir is the highest-confidence signal already in the data.
+     2) title-prefix groups — strip common sequel/subtitle suffixes (", The",
+        a colon-and-subtitle, trailing "Part II"/"Part Two"/roman numerals,
+        a trailing number) via normT() and group movies whose normalized
+        base title matches; 2+ matches counts as a "collection". This
+        catches obvious sequels (e.g. "Movie" + "Movie II") but is not a
+        real franchise map — false positives/negatives are expected on edge
+        cases (reused subtitles, reboots, titles that are legitimately just
+        a roman numeral, etc).
+   Shows at most 4 groups, largest group first (ties broken by original
+   allRanked order, i.e. score). */
+function franchiseBaseTitle(title){
+  let t = normT(title).replace(/\bthe\b/g, " ");
+  t = t.replace(/\b(part\s+)?(ii|iii|iv|v|vi|vii|viii|ix|x)\b\s*$/, "");
+  t = t.replace(/\bpart\s+(one|two|three|four|five)\b\s*$/, "");
+  t = t.replace(/\b\d+\b\s*$/, "");
+  return t.trim();
+}
+function profileFranchisesHTML(){
+  const ids = allRanked("movie");
+  if(ids.length < 2) return "";
+  const byDir = new Map(), byBase = new Map();
+  ids.forEach(id => {
+    const m = getMovie(id);
+    if(m.dir && m.dir !== "—"){
+      if(!byDir.has(m.dir)) byDir.set(m.dir, []);
+      byDir.get(m.dir).push(id);
+    }
+    const base = franchiseBaseTitle(m.title);
+    if(base){
+      if(!byBase.has(base)) byBase.set(base, []);
+      byBase.get(base).push(id);
+    }
+  });
+  const groups = [];
+  byDir.forEach((groupIds, dir) => { if(groupIds.length >= 3) groups.push({label: dir, ids: groupIds}); });
+  byBase.forEach((groupIds, base) => {
+    if(groupIds.length < 2) return;
+    // label with the shortest title in the group — usually the original
+    // entry, before any "Part II"/subtitle got appended
+    const label = groupIds.map(id => getMovie(id).title).sort((a,b) => a.length - b.length)[0];
+    groups.push({label, ids: groupIds});
+  });
+  if(!groups.length) return "";
+  groups.forEach(g => { g.ids.sort((a,b) => ids.indexOf(a) - ids.indexOf(b)); });
+  groups.sort((a,b) => b.ids.length - a.ids.length);
+  return groups.slice(0,4).map(g => {
+    return `<div class="sechead">${esc(g.label)}</div><div class="card">${
+        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+          <span class="rankno">${i+1}</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
   }).join("");
@@ -1892,7 +2911,11 @@ function profileHTML(d){
     ${profileCustomizeHTML()}
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
+    ${profileHeatmapHTML()}
+    ${profileWrapEntryHTML()}
+    ${tasteTwinsHTML(d)}
     ${profilePodiumHTML()}
+    ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
     <button class="danger" id="resetBtn">Reset all my data</button>
     <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
@@ -2097,6 +3120,12 @@ function removeFromWatch(id){
 }
 function toggleLocalLike(k){
   S.likes[k] = !S.likes[k]; if(!S.likes[k]) delete S.likes[k];
+  if(S.likes[k]) delete S.dislikes[k]; // liking clears a prior dislike
+  save(); renderFeed();
+}
+function toggleLocalDislike(k){
+  S.dislikes[k] = !S.dislikes[k]; if(!S.dislikes[k]) delete S.dislikes[k];
+  if(S.dislikes[k]) delete S.likes[k]; // disliking clears a prior like
   save(); renderFeed();
 }
 
@@ -2286,8 +3315,15 @@ const CLICK_ROUTES = [
   ["rate",        el => startRate(el.dataset.rate)],
   ["watch",       el => toggleWatch(el.dataset.watch)],
   ["unwatch",     el => removeFromWatch(el.dataset.unwatch)],
+  ["wpadd",       el => addToWatchParty(el.dataset.wpadd)],
+  ["wpremove",    el => removeFromWatchParty(el.dataset.wpremove)],
   ["like",        el => toggleLocalLike(el.dataset.like)],
   ["clike",       el => { const [u, mv] = el.dataset.clike.split("|"); toggleCloudLike(u, mv, el); }],
+  ["dislike",     el => toggleLocalDislike(el.dataset.dislike)],
+  ["cdislike",    el => { const [u, mv] = el.dataset.cdislike.split("|"); toggleCloudDislike(u, mv); }],
+  ["tsort",       el => resortTakes(el.dataset.tsort)],
+  ["tkreplies",   el => { const [u, mv] = el.dataset.tkreplies.split("|"); toggleReplies(u, mv); }],
+  ["tkreplypost", el => { const [u, mv] = el.dataset.tkreplypost.split("|"); submitReply(u, mv); }],
   ["person",      el => openPerson(el.dataset.person)],
   ["notif",       el => openDetail(el.dataset.notif)],
   ["notifperson", el => openPerson(el.dataset.notifperson)],
@@ -2297,9 +3333,13 @@ const CLICK_ROUTES = [
   ["addcustom",   () => openCustom()],
   ["ftab",        el => { feedTab = el.dataset.ftab; renderFeed(); }],
   ["stype",       el => switchSearchType(el.dataset.stype)],
+  ["afmt",        el => { animeFormat = el.dataset.afmt; renderSearch(); }],
   ["rtype",       el => { rankType = el.dataset.rtype; rankGenre = ""; renderRanks(); }],
   ["filter",      el => { rankFilter = el.dataset.filter; renderRanks(); }],
   ["gfilter",     el => { rankGenre = rankGenre === el.dataset.gfilter ? "" : el.dataset.gfilter; renderRanks(); }],
+  ["tiebreak",    el => { const [a, b] = el.dataset.tiebreak.split("|"); openTiebreaker(a, b); }],
+  ["tbdismiss",   el => dismissTiebreak(el.dataset.tbdismiss)],
+  ["tbpick",      el => answerTiebreak(el.dataset.tbpick)],
   ["acc",         el => { S.ui.accent = el.dataset.acc === "" ? null : +el.dataset.acc; save(); applyUI(); renderProfile(); }],
   ["oauth",       el => startOauth(el.dataset.oauth)],
   ["chue",        el => pickHue(el, "chue")],
@@ -2324,6 +3364,7 @@ const CLICK_IDS = {
   logoutBtn2:     () => doLogout(),
   tasteBtn:       () => { O = null; openOnboarding(1); },
   wallBtn:        () => openWallPicker(),
+  tasteTwinsBtn:  () => fetchTasteTwins(),
   signupBtn:      () => openAuthSheet("signup"),
   loginBtn:       () => openAuthSheet("login"),
   exportBtn:      () => exportBackup(),
@@ -2332,6 +3373,9 @@ const CLICK_IDS = {
   lbAuto:         () => runLetterboxdAuto(),
   lbManual:       () => runLetterboxdManual(),
   shareBtn:       () => shareTopFive(),
+  wrapBtn:        () => openYearlyWrap(),
+  wrapClose:      () => closeSheet(),
+  wrapShare:      () => shareYearlyWrap(),
   resetBtn:       () => resetEverything(),
   shareProfBtn:   () => openShare("Check my movie taste on Reeli 🎬",
                       location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle)),
@@ -2356,7 +3400,11 @@ const CLICK_IDS = {
   esave:          () => saveAccountForm(),
   // public profile sheet
   pfollow:        () => toggleSheetPerson(),
+  wpBtn:          () => toggleSheetWatchParty(),
+  wpAddToggle:    () => toggleWatchPartyAdd(),
   pshare:         () => shareSheetPerson(),
+  pfull:          () => openFullProfile(),
+  pfullClose:     () => closeSheet(),
   // tonight's pick
   pkSeen:         () => { if(PICK_MOVIE) startRate(PICK_MOVIE.id); },
   pkAgain:        () => { if(PICK_MOVIE) pickTonight(PICK_MOVIE.id); },
@@ -2456,6 +3504,7 @@ function closeSheet(force){
   sheetLocked = false;
   overlay.classList.remove("on");
   sheet.innerHTML = "";
+  sheet.classList.remove("full");
   sheet.removeAttribute("tabindex");
   const back = sheetOpener;
   sheetOpener = null;
@@ -2495,7 +3544,8 @@ function openDetail(id){
         <div class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}${m.dir && m.dir !== "—" ? `<br>Directed by ${esc(m.dir)}` : ""}
           ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
         ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
-          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list</div></div>` : ""}
+          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list
+          ${S.rewatches[id] ? `<br>🔁 watched ${S.rewatches[id]}×` : ""}</div></div>` : ""}
       </div>
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
@@ -2505,6 +3555,7 @@ function openDetail(id){
       ${ranked
         ? `<button class="pillbtn acc" data-a="rerate">Re-rank</button>
            <button class="pillbtn" data-a="take">${S.notes[id] ? "✍ Edit take" : "✍ Hot take"}</button>
+           <button class="pillbtn" data-a="rewatch">🔁 ${S.rewatches[id] ? "Log another watch" : "I rewatched this"}</button>
            <button class="pillbtn" data-a="unrank">Remove ranking</button>`
         : `<button class="pillbtn acc" data-a="rate">Rank it</button>
            <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
@@ -2528,10 +3579,26 @@ function detailAction(a){
     const fe = S.myFeed.find(f => f.movie === id); if(fe) fe.note = t;
     save(); openDetail(id); toast(t ? "Take saved ✍" : "Take removed");
   }
+  else if(a === "rewatch"){ logRewatch(id); }
   else if(a === "unrank"){ removeRanking(id); delete S.notes[id]; save(); closeSheet(); render(cur); toast("Ranking removed"); }
   else if(a === "watch"){
     if(S.watch.includes(id)){ S.watch = S.watch.filter(x=>x!==id); } else { ensureSaved(id); S.watch.unshift(id); toast("Added to watchlist 🔖"); }
     save(); openDetail(id); render(cur);
+  }
+}
+/* logging a rewatch never touches the ranking/score — it's a separate tally
+   of how many times you've watched something, kept purely for the fun of
+   the number. Local count is optimistic; the cloud row (if signed in) is
+   just an append-only log, one row per watch, so pullRewatches() can
+   recompute the same count on another device. */
+function logRewatch(id){
+  S.rewatches[id] = (S.rewatches[id] || 0) + 1;
+  save(); openDetail(id);
+  toast(`Logged — ${S.rewatches[id]}× now 🔁`);
+  if(authed()){
+    sb(pgPath("rewatches"), {method:"POST",
+      body: JSON.stringify({user_id: myId(), movie_id: id})})
+      .catch(e => logErr("logging a rewatch", e));
   }
 }
 
@@ -2541,9 +3608,9 @@ function openCustom(){
     <h1 class="h1">Add media</h1>
     <p class="sub">It joins your personal database and is ready to rank.</p>
     <div style="display:grid;gap:10px">
-      <input id="ctitle" aria-label="Title" placeholder="Title" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
-      <input id="cyear" aria-label="Year" placeholder="Year" inputmode="numeric" maxlength="4" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
-      <input id="cgenre" aria-label="Genre (optional)" placeholder="Genre (optional)" style="padding:12px 14px;border-radius:12px;border:1px solid var(--line);background:var(--surface);color:var(--ink);font-size:15px">
+      <input class="field" id="ctitle" aria-label="Title" placeholder="Title">
+      <input class="field" id="cyear" aria-label="Year" placeholder="Year" inputmode="numeric" maxlength="4">
+      <input class="field" id="cgenre" aria-label="Genre (optional)" placeholder="Genre (optional)">
       <div style="display:flex;gap:9px;margin-top:4px">
         <button class="pillbtn acc" id="csave">Add &amp; rank</button>
         <button class="pillbtn" id="ccancel">Cancel</button>
@@ -2646,9 +3713,14 @@ function placeAt(idx){
   S.watch = S.watch.filter(x => x !== R.id);
   const m = getMovie(R.id), sc = scoreOf(R.id), rk = rankOf(R.id);
   // store a real timestamp; the feed renders it relative ("2h", "yesterday")
-  // so an item ranked days ago never keeps saying "just now"
-  S.myFeed.unshift({movie:R.id, score:sc, ts: new Date().toISOString(), note:"", likes:0, rank:rk});
+  // so an item ranked days ago never keeps saying "just now". Also stash it in
+  // S.rankTimes, keyed by movie — unlike S.myFeed (capped to 6 entries), this
+  // is never trimmed, so it's the durable record the activity heat map reads
+  // (see profileHeatmapHTML()).
+  const ts = new Date().toISOString();
+  S.myFeed.unshift({movie:R.id, score:sc, ts, note:"", likes:0, rank:rk});
   if(S.myFeed.length > 6) S.myFeed.pop();
+  S.rankTimes[R.id] = ts;
   save();
   // catalog movies arrive without genre/director — backfill so lists show them
   enrich(R.id, ok => { if(ok){ save(); if(cur === "ranks") renderRanks(); } });
@@ -2687,6 +3759,55 @@ function undoPlacement(){
   delete S.notes[PLACED_ID];
   if(S.myFeed.length && S.myFeed[0].movie === PLACED_ID) S.myFeed.shift();
   save(); closeSheet(); render(cur); toast("Ranking undone");
+}
+
+/* ---------- tiebreaker: a one-off rematch for two already-ranked items ----------
+   Deliberately NOT the rate flow: a tiebreaker never runs a binary search, it
+   just asks once about a pair findTiebreakers() already found suspiciously
+   close, then leaves the order alone or swaps the two — nothing else about
+   the ranking changes. TIEBREAK mirrors how R carries state for the real
+   flow, but its shape is flat because there is no search left to track. */
+let TIEBREAK = null; // {bucket, idA, idB} | null
+function openTiebreaker(idA, idB){
+  const a = getMovie(idA), b = getMovie(idB);
+  if(!a || !b) return;
+  TIEBREAK = {bucket: bucketOf(idA), idA, idB};
+  openSheet(`
+    <div class="step">Tiebreaker · these two landed almost tied</div>
+    <h1 class="h1" style="text-align:center;margin-top:14px">Which did you like more?</h1>
+    <div class="faceoff">
+      <button class="contender" data-tbpick="a">${posterHTML(a,"p-md")}<span class="t">${esc(a.title)}</span><span class="d">${a.year}</span></button>
+      <span class="vs">VS</span>
+      <button class="contender" data-tbpick="b">${posterHTML(b,"p-md")}<span class="t">${esc(b.title)}</span><span class="d">${b.year}</span></button>
+    </div>
+    <button class="tiebtn" data-tbpick="tie">Still too close to call</button>`);
+}
+/* the user answered the one-off matchup at TIEBREAK.
+     "a"   idA (already ranked above idB) confirmed as the better one -> no change
+     "b"   idB was actually preferred -> swap their two positions in S[bucket]
+     "tie" leave the order as-is
+   Either way the pair is dropped from this session's prompts so it doesn't
+   immediately resurface. */
+function answerTiebreak(choice){
+  if(!TIEBREAK) return;
+  const {bucket, idA, idB} = TIEBREAK;
+  tiebreakDismissed.add(pairKey(idA, idB));
+  if(choice === "b"){
+    const arr = S[bucket], ia = arr.indexOf(idA), ib = arr.indexOf(idB);
+    // splicing/reassigning S[bucket] elsewhere invalidates RANKED_CACHE via its
+    // length/identity check; a same-length swap does not, so bumpRanked() here
+    // is the explicit invalidation the cache's own comment calls for
+    if(ia !== -1 && ib !== -1){ [arr[ia], arr[ib]] = [arr[ib], arr[ia]]; bumpRanked(); }
+  }
+  TIEBREAK = null;
+  save();
+  closeSheet();
+  if(cur === "ranks") renderRanks();
+}
+function dismissTiebreak(pair){
+  const [a, b] = pair.split("|");
+  tiebreakDismissed.add(pairKey(a, b));
+  if(cur === "ranks") renderRanks();
 }
 
 /* ---------- personalization: accent color + movie-scene wallpaper ---------- */

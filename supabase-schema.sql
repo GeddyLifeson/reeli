@@ -104,3 +104,130 @@ create policy "users like as themselves"
   on public.likes for insert with check ((select auth.uid()) = user_id);
 create policy "users unlike as themselves"
   on public.likes for delete using ((select auth.uid()) = user_id);
+
+-- ============ dislikes: a private "not for me" toggle, not a second public
+-- tally — unlike likes, only the person who dislikes something can see that
+-- they did, so no count is ever shown or computable by anyone else ============
+create table public.dislikes (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  ranking_user uuid not null,
+  ranking_movie text not null,
+  created_at timestamptz not null default now(),
+  primary key (user_id, ranking_user, ranking_movie),
+  foreign key (ranking_user, ranking_movie)
+    references public.rankings(user_id, movie_id) on delete cascade
+);
+alter table public.dislikes enable row level security;
+create policy "dislikes readable by the person who made them"
+  on public.dislikes for select using ((select auth.uid()) = user_id);
+create policy "users dislike as themselves"
+  on public.dislikes for insert with check ((select auth.uid()) = user_id);
+create policy "users un-dislike as themselves"
+  on public.dislikes for delete using ((select auth.uid()) = user_id);
+
+-- ============ rewatches: an append-only log, one row per watch ============
+-- never touches the ranking/score — just a fun tally of how many times
+-- you've watched something you already ranked
+create table public.rewatches (
+  id bigint generated always as identity primary key,
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  movie_id text not null,
+  watched_at timestamptz not null default now(),
+  foreign key (user_id, movie_id) references public.rankings(user_id, movie_id) on delete cascade
+);
+alter table public.rewatches enable row level security;
+create policy "rewatches readable by everyone"
+  on public.rewatches for select using (true);
+create policy "users log their own rewatches"
+  on public.rewatches for insert with check ((select auth.uid()) = user_id);
+create policy "users delete their own rewatch entries"
+  on public.rewatches for delete using ((select auth.uid()) = user_id);
+
+-- ============ watch_parties: a shared watchlist between two Reelmates ============
+-- Deliberately separate from public.watchlist above (which is private, owner-only
+-- readable, and never touched by this feature) — a watch party is a second,
+-- distinct concept: one row per (owner, partner) pair, readable by BOTH of
+-- them. Storing one row per undirected pair (rather than two rows, one per
+-- direction) keeps the RLS policy a single boolean check — "am I the owner or
+-- the partner?" — instead of needing a matching mirror row kept in sync on
+-- every insert/delete. Starting a party is enough to prove intent; there is no
+-- separate accept flow, so `owner` is just whoever clicked first.
+create table public.watch_parties (
+  id uuid primary key default gen_random_uuid(),
+  owner uuid not null references public.profiles(id) on delete cascade,
+  partner uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique(owner, partner),
+  check (owner <> partner)
+);
+alter table public.watch_parties enable row level security;
+create policy "watch parties readable by owner or partner"
+  on public.watch_parties for select using ((select auth.uid()) in (owner, partner));
+create policy "users start a watch party as the owner"
+  on public.watch_parties for insert with check ((select auth.uid()) = owner);
+create policy "only the owner deletes their watch party"
+  on public.watch_parties for delete using ((select auth.uid()) = owner);
+
+-- reverse lookup: "is there already a party where I'm the partner?" (the
+-- primary key already covers "where I'm the owner")
+create index watch_parties_partner_idx on public.watch_parties (partner);
+
+-- ============ watch_party_items: one row per title added to a watch party ============
+create table public.watch_party_items (
+  id bigint generated always as identity primary key,
+  party_id uuid not null references public.watch_parties(id) on delete cascade,
+  movie_id text not null,
+  title text not null,
+  year int, genre text, director text, poster text,
+  media_type text not null default 'movie' check (media_type in ('movie','show','anime')),
+  added_by uuid not null references public.profiles(id),
+  added_at timestamptz not null default now(),
+  unique(party_id, movie_id)
+);
+alter table public.watch_party_items enable row level security;
+-- every policy below joins back through party_id to watch_parties to ask the
+-- same question watch_parties' own policy asks: is the caller the owner or
+-- the partner of the party this item belongs to?
+create policy "watch party items readable by either party"
+  on public.watch_party_items for select using (
+    exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+create policy "either party adds items"
+  on public.watch_party_items for insert with check (
+    (select auth.uid()) = added_by
+    and exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+create policy "either party removes items"
+  on public.watch_party_items for delete using (
+    exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+
+create index watch_party_items_party_idx on public.watch_party_items (party_id);
+
+-- ============ hot_take_replies: debate threads on a hot take ============
+-- a "hot take" is just the `note` on someone else's ranking row (see
+-- takesSectionHTML() in app.js) — never its own table — so a reply is tied
+-- to that (ranking_user, ranking_movie) pair, exactly like likes/dislikes.
+-- Public conversation, not private: readable by everyone, same as the take
+-- itself, but only postable/deletable by the person who wrote the reply.
+create table public.hot_take_replies (
+  id bigint generated always as identity primary key,
+  ranking_user uuid not null,
+  ranking_movie text not null,
+  author uuid not null references public.profiles(id) on delete cascade,
+  body text not null check (char_length(body) between 1 and 280),
+  created_at timestamptz not null default now(),
+  foreign key (ranking_user, ranking_movie)
+    references public.rankings(user_id, movie_id) on delete cascade
+);
+alter table public.hot_take_replies enable row level security;
+create policy "hot take replies readable by everyone"
+  on public.hot_take_replies for select using (true);
+create policy "users reply as themselves"
+  on public.hot_take_replies for insert with check ((select auth.uid()) = author);
+create policy "users delete their own replies"
+  on public.hot_take_replies for delete using ((select auth.uid()) = author);
+
+-- both loadCommunityScores() (reply counts, one query per take's movie) and
+-- an open thread's fetch (all replies for one take) filter on this pair
+create index hot_take_replies_take_idx on public.hot_take_replies (ranking_movie, ranking_user, created_at);
