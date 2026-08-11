@@ -111,6 +111,7 @@ export function makeSeed(i, DB){
       loved, fine, disliked, watch, custom,
       likes: {me0: r() < .5, me1: r() < .5},
       dislikes: {me2: r() < .3},
+      rewatches: Object.fromEntries(all.filter(() => r() < .25).map(id => [id, 1 + Math.floor(r() * 4)])),
       notes, myFeed, feedSeen: "", notifSeen: "",
       /* also index-derived, for the same reason as `legacy` above */
       lbQueue: i % 4 === 1 ? all.slice(0, i % 3) : [],

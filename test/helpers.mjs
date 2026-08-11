@@ -164,5 +164,26 @@ ok(pgPath("profiles", {handle: pgEq("o'neil")}).includes("o'neil".replace("'", "
   for(const k of Object.keys(C)) delete C[k];
 }
 
+/* typeOf: an "al:" id is unambiguously AniList and must classify as anime
+   even when `kind` is missing — this is the fallback that self-heals
+   rankings/custom entries saved before the anime split existed (or pulled
+   while getMovie() already resolved a stale, kind-less entry), which would
+   otherwise sit forever misclassified as "movie" and never surface under
+   the Anime tab or podium. */
+{
+  const {typeOf} = g;
+  const S = T.S;
+  S.custom.push({id: "al:legacy1", title: "Legacy Anime", year: 2018, genre: "Action", dir: "", hue: 5});
+  // deliberately no `kind` field — the exact shape of pre-split data
+  eq(typeOf("al:legacy1"), "anime", "an al: id with no kind still classifies as anime");
+  S.custom.length = 0;
+
+  S.custom.push({id: "al:tagged", title: "Tagged Anime", year: 2020, genre: "Action", dir: "", hue: 5, kind: "anime"});
+  eq(typeOf("al:tagged"), "anime", "an al: id with kind already set to anime still classifies as anime");
+  S.custom.length = 0;
+
+  eq(typeOf("tt0068646"), "movie", "a plain tt id with no kind still classifies as movie, not anime");
+}
+
 console.log(fail ? `\nFAILED (${fail})` : "\nALL PASS");
 process.exit(fail ? 1 : 0);

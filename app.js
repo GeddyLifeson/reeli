@@ -109,6 +109,7 @@ function seed(){
     custom:[],
     likes:{},
     dislikes:{},
+    rewatches:{},
     notes:{},
     myFeed:[],
     feedSeen:"",
@@ -129,6 +130,7 @@ function load(){
         if(!("guestChosen" in s)) s.guestChosen = false;
         if(!s.notes) s.notes = {};
         if(!s.dislikes) s.dislikes = {};
+        if(!s.rewatches) s.rewatches = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
@@ -188,13 +190,24 @@ function ensureSaved(id){
    head-to-head never pits a movie against a show, and "top 10" means top 10
    of that one type. TYPES lists every pool; typeOf() says which one an id
    belongs to, straight off the movie's `kind` (unset/"movie" -> "movie",
-   "show" -> "show", "anime" -> "anime"). */
+   "show" -> "show", "anime" -> "anime").
+
+   Fallback: an "al:" id is unambiguously AniList regardless of `kind` — that
+   prefix exists specifically so anime ids never collide with an IMDb tt-id
+   (see the AniList section below). Rankings/custom entries saved before the
+   anime split shipped (or a cloud row pulled while `getMovie` already
+   resolved to some other stale entry lacking `kind`) can end up with no
+   `kind` at all; without this fallback those items silently misclassify as
+   "movie" forever and never show up under the Anime tab or podium, even
+   though their id already says exactly what they are. */
 const TYPES = ["movie", "show", "anime"];
 const TYPE_LABEL = { movie:"Movies", show:"TV Shows", anime:"Anime" };
 function typeOf(id){
   const m = getMovie(id);
   const k = m && m.kind;
-  return k === "show" || k === "anime" ? k : "movie";
+  if(k === "show" || k === "anime") return k;
+  if(typeof id === "string" && id.startsWith("al:")) return "anime";
+  return "movie";
 }
 /* "1 movie" / "3 shows" / "3 anime" — anime doesn't pluralize */
 function typeNoun(type, n){
@@ -906,6 +919,17 @@ async function pullDislikes(){
   const dk = await sb(pgPath("dislikes", {user_id:pgEq(myId()), select:"ranking_user,ranking_movie"}));
   CLOUD.myDislikes = dk.ok ? new Set((await dk.json()).map(x => x.ranking_user + "|" + x.ranking_movie)) : new Set();
 }
+/* how many times you've logged rewatching each of your own ranked titles —
+   an append-only log server-side (one row per watch), collapsed to a count
+   per movie for local state, same shape as S.rewatches so a guest's local
+   tally and a signed-in pull look identical to everything that reads it */
+async function pullRewatches(){
+  const rw = await sb(pgPath("rewatches", {user_id:pgEq(myId()), select:"movie_id"}));
+  if(!rw.ok) return;
+  const counts = {};
+  (await rw.json()).forEach(x => { counts[x.movie_id] = (counts[x.movie_id] || 0) + 1; });
+  S.rewatches = counts;
+}
 async function pullCloud(){
   if(!authed()) return;
   PULLING = true;
@@ -920,6 +944,7 @@ async function pullCloud(){
     step = "watchlist"; await pullWatchlist();
     step = "likes";     await pullLikes();
     step = "dislikes";  await pullDislikes();
+    step = "rewatches"; await pullRewatches();
     save();
   }catch(e){ logErr("pullCloud/" + step, e); }
   PULLING = false;
@@ -2821,7 +2846,8 @@ function openDetail(id){
         <div class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}${m.dir && m.dir !== "—" ? `<br>Directed by ${esc(m.dir)}` : ""}
           ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
         ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
-          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list</div></div>` : ""}
+          ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list
+          ${S.rewatches[id] ? `<br>🔁 watched ${S.rewatches[id]}×` : ""}</div></div>` : ""}
       </div>
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
@@ -2831,6 +2857,7 @@ function openDetail(id){
       ${ranked
         ? `<button class="pillbtn acc" data-a="rerate">Re-rank</button>
            <button class="pillbtn" data-a="take">${S.notes[id] ? "✍ Edit take" : "✍ Hot take"}</button>
+           <button class="pillbtn" data-a="rewatch">🔁 ${S.rewatches[id] ? "Log another watch" : "I rewatched this"}</button>
            <button class="pillbtn" data-a="unrank">Remove ranking</button>`
         : `<button class="pillbtn acc" data-a="rate">Rank it</button>
            <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
@@ -2854,10 +2881,26 @@ function detailAction(a){
     const fe = S.myFeed.find(f => f.movie === id); if(fe) fe.note = t;
     save(); openDetail(id); toast(t ? "Take saved ✍" : "Take removed");
   }
+  else if(a === "rewatch"){ logRewatch(id); }
   else if(a === "unrank"){ removeRanking(id); delete S.notes[id]; save(); closeSheet(); render(cur); toast("Ranking removed"); }
   else if(a === "watch"){
     if(S.watch.includes(id)){ S.watch = S.watch.filter(x=>x!==id); } else { ensureSaved(id); S.watch.unshift(id); toast("Added to watchlist 🔖"); }
     save(); openDetail(id); render(cur);
+  }
+}
+/* logging a rewatch never touches the ranking/score — it's a separate tally
+   of how many times you've watched something, kept purely for the fun of
+   the number. Local count is optimistic; the cloud row (if signed in) is
+   just an append-only log, one row per watch, so pullRewatches() can
+   recompute the same count on another device. */
+function logRewatch(id){
+  S.rewatches[id] = (S.rewatches[id] || 0) + 1;
+  save(); openDetail(id);
+  toast(`Logged — ${S.rewatches[id]}× now 🔁`);
+  if(authed()){
+    sb(pgPath("rewatches"), {method:"POST",
+      body: JSON.stringify({user_id: myId(), movie_id: id})})
+      .catch(e => logErr("logging a rewatch", e));
   }
 }
 
