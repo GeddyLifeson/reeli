@@ -1598,7 +1598,7 @@ async function openPerson(id){
       <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>them</span></div></div>` : ""}
     ${rows.length ? TYPES.map(t => byType[t].length ? `
       <div class="sechead">Their top ${TYPE_LABEL[t].toLowerCase()}</div>
-      <div class="card">${byType[t].slice(0, 10).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+      <div class="card">${byType[t].slice(0, 10).map((r, i) => `<button class="row shelf" style="--i:${i}" data-open="${esc(r.movie_id)}">
         <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
         <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
         ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
@@ -1643,7 +1643,7 @@ function personPodiumHTML(byType){
     const rows = byType[t];
     if(!rows.length) return "";
     return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
-        rows.slice(0, 3).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+        rows.slice(0, 3).map((r, i) => `<button class="row shelf" style="--i:${i}" data-open="${esc(r.movie_id)}">
           <span class="rankno">${medals[i]}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
           <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
           ${scoreHTML(Number(r.score))}</button>`).join("")}</div>`;
@@ -2241,9 +2241,9 @@ function renderRanks(){
       if(rankGenre){ const m = getMovie(id); if(!m || m.genre !== rankGenre) return false; }
       return true;
     });
-    const rows = shown.map(id => {
+    const rows = shown.map((id, i) => {
       const m = getMovie(id); if(!m) return "";
-      return `<button class="row" data-open="${id}">
+      return `<button class="row shelf" style="--i:${i}" data-open="${id}">
         <span class="rankno">${rankOf(id)}</span>
         ${posterHTML(m,"p-sm")}
         <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
@@ -2295,9 +2295,12 @@ function lovedMovieAnchor(){
 function similarityTo(anchor, m){
   return (anchor.genre && m.genre === anchor.genre ? 2 : 0) + (anchor.dir && m.dir === anchor.dir ? 3 : 0);
 }
-function movieRowHTML(m){
+function movieRowHTML(m, i){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
-  return `<div class="row">
+  // i (this row's index within whatever list it's part of) drives the
+  // "stocked onto the shelf" stagger — see .shelf/shelfIn in styles.css.
+  // Callers that don't care about staggering (none currently) can omit it.
+  return `<div class="row shelf" style="--i:${i|0}">
     ${posterHTML(m,"p-sm")}
     <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
       <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
@@ -2385,9 +2388,9 @@ function renderSearch(){
     const list = q
       ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
       : pool.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 12);
-    const rows = list.map(movieRowHTML).join("");
+    const rows = list.map((m,i) => movieRowHTML(m,i)).join("");
     const trend = TRENDING.movie;
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("") : "";
     const trendSkel = (!q && trend === "loading") ? `<div class="sechead">Popular movies</div><div class="card">${skeletonRows(4)}</div>` : "";
     // "Because you loved X" — anchored on one specific loved movie, not the
     // abstract taste vector. Same pool the "Picked for your taste" list above
@@ -2397,7 +2400,7 @@ function renderSearch(){
     const anchorRows = anchor
       ? pool.filter(m => !isRanked(m.id) && m.id !== anchor.id)
           .sort((a,b) => similarityTo(anchor,b) - similarityTo(anchor,a) || tasteScore(b) - tasteScore(a))
-          .slice(0, 6).map(movieRowHTML).join("")
+          .slice(0, 6).map((m,i) => movieRowHTML(m,i)).join("")
       : "";
     body = `
       ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : trendSkel}
@@ -2424,8 +2427,8 @@ function renderSearch(){
       ${["all", ...formats].map(f =>
         `<button class="seg sm ${animeFormat===f?"cur":""}" data-afmt="${esc(f)}">${f === "all" ? "All" : esc(ANI_FORMAT_LABEL[f] || f)}</button>`).join("")}
     </div>` : "";
-    const customRows = customList.filter(matchesFormat).map(movieRowHTML).join("");
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const customRows = customList.filter(matchesFormat).map((m,i) => movieRowHTML(m,i)).join("");
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("") : "";
     const trendEmpty = !q && !trendRows
       ? trend === "loading" ? `<div class="sechead">Trending ${label}</div><div class="card">${skeletonRows(4)}</div>`
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
@@ -2436,7 +2439,7 @@ function renderSearch(){
     // trending order. The pool is capped at ~10-14 items, so some overlap
     // with the Trending section above is an acceptable simplification.
     const recRows = (!q && Array.isArray(trend))
-      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map(movieRowHTML).join("")
+      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("")
       : "";
     body = `
       ${formatFilterHTML}
@@ -2447,7 +2450,7 @@ function renderSearch(){
   }
   let liveHTML = "";
   if(q){
-    const liveRows = liveResults.map(movieRowHTML).join("");
+    const liveRows = liveResults.map((m,i) => movieRowHTML(m,i)).join("");
     liveHTML = `<div class="sechead">Worldwide catalog</div><div class="card">${
       liveState === "loading" ? skeletonRows(4)
       : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
@@ -2485,7 +2488,7 @@ function onSearchInput(inp){
 /* ---------- watchlist ---------- */
 function renderWatch(){
   const items = S.watch.map(getMovie).filter(Boolean);
-  const rows = items.map(m => `<div class="row">
+  const rows = items.map((m, i) => `<div class="row shelf" style="--i:${i}">
       ${posterHTML(m,"p-sm")}
       <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
         <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
@@ -2983,10 +2986,10 @@ function yearlyWrapHTML(){
 
   const typeChips = TYPES.filter(t => w.byType[t].length)
     .map(t => `<span class="chip">${esc(TYPE_LABEL[t])} · ${w.byType[t].length}</span>`).join("");
-  const podium = TYPES.filter(t => w.top[t]).map(t => {
+  const podium = TYPES.filter(t => w.top[t]).map((t, i) => {
     const id = w.top[t], m = getMovie(id);
     return `<div class="sechead">${esc(TYPE_LABEL[t])} of the year</div><div class="card">
-        <button class="row" data-open="${id}">
+        <button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">🏆</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button></div>`;
@@ -3037,7 +3040,7 @@ function profilePodiumHTML(){
     const ids = allRanked(t);
     if(!ids.length) return "";
     return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
-        ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+        ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">${medals[i]}</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
@@ -3096,7 +3099,7 @@ function profileFranchisesHTML(){
   groups.sort((a,b) => b.ids.length - a.ids.length);
   return groups.slice(0,4).map(g => {
     return `<div class="sechead">${esc(g.label)}</div><div class="card">${
-        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">${i+1}</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
@@ -3698,11 +3701,22 @@ const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select,t
 function focusablesIn(root){
   return [...root.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null || el === document.activeElement);
 }
+// prefers-reduced-motion is already handled globally in CSS (every animation
+// is killed), but closeSheet() below also holds the DOM in place with a JS
+// timer to let the CSS exit animation play — with reduced motion there's no
+// animation to wait for, so that timer should collapse to 0 instead of
+// leaving a pointless pause before the sheet actually disappears.
+const reduceMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+let sheetCloseT = null;
 function openSheet(html, locked){
   // only remember the opener for the outermost sheet: re-rendering an open
   // sheet (openDetail does this when enrichment lands) must not make the sheet
   // itself the thing focus returns to
   if(!overlay.classList.contains("on")) sheetOpener = document.activeElement;
+  // reopening mid-close (e.g. openDetail() re-rendering while the previous
+  // sheet was still animating out) must cancel that close outright
+  clearTimeout(sheetCloseT);
+  overlay.classList.remove("closing");
   sheetLocked = !!locked;
   sheet.innerHTML = (locked ? "" : `<div class="grab" aria-hidden="true"></div>`) + html;
   overlay.classList.add("on");
@@ -3711,15 +3725,25 @@ function openSheet(html, locked){
   if(first) first.focus();
   else { sheet.setAttribute("tabindex", "-1"); sheet.focus(); }
 }
+/* closing plays the sheet/overlay entrance animations in reverse (see
+   .overlay.closing in styles.css) before the DOM actually goes away — a dead
+   plain class swap doesn't get a farewell animation, since `.overlay{display:
+   none}` would yank it off-screen mid-frame, so the actual teardown is held
+   behind a short timer matching the CSS animation's duration. */
 function closeSheet(force){
   if(sheetLocked && !force) return;
+  if(!overlay.classList.contains("on")) return;
   sheetLocked = false;
-  overlay.classList.remove("on");
-  sheet.innerHTML = "";
-  sheet.classList.remove("full");
-  sheet.removeAttribute("tabindex");
+  overlay.classList.add("closing");
   const back = sheetOpener;
   sheetOpener = null;
+  clearTimeout(sheetCloseT);
+  sheetCloseT = setTimeout(() => {
+    overlay.classList.remove("on", "closing");
+    sheet.innerHTML = "";
+    sheet.classList.remove("full");
+    sheet.removeAttribute("tabindex");
+  }, reduceMotion() ? 0 : 180);
   // the opener is often inside markup a re-render has since replaced, so only
   // restore focus if it is still connected to the document
   if(back && back.isConnected && typeof back.focus === "function") back.focus();
@@ -3757,7 +3781,7 @@ function openDetail(id){
           ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
         ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
           ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list
-          ${S.rewatches[id] ? `<br>🔁 watched ${S.rewatches[id]}×` : ""}</div></div>` : ""}
+          ${S.rewatches[id] ? `<br>🔁 watched <span data-rewatch-count>${S.rewatches[id]}</span>×` : ""}</div></div>` : ""}
       </div>
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
@@ -3806,6 +3830,13 @@ function detailAction(a){
 function logRewatch(id){
   S.rewatches[id] = (S.rewatches[id] || 0) + 1;
   save(); openDetail(id);
+  // openDetail() always renders the count plainly (every re-render of the
+  // sheet — enrichment landing, closing a hot-take editor — would otherwise
+  // replay the pulse too); only this specific "just logged a watch" moment
+  // should flash it, so the class is added by hand right after the sheet
+  // that just displayed it is rebuilt.
+  const rw = sheet.querySelector("[data-rewatch-count]");
+  if(rw) rw.classList.add("pulse");
   toast(`Logged — ${S.rewatches[id]}× now 🔁`);
   if(authed()){
     sb(pgPath("rewatches"), {method:"POST",
