@@ -1670,7 +1670,7 @@ function renderWatchPartySheet(loading){
         <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span></span>
         <button class="pillbtn acc" data-wpadd="${esc(m.id)}">Add</button>
       </div>`).join("")}</div>`
-      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — bookmark something first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — queue something up first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
   openSheet(`
     <h1 class="h1">Watch party</h1>
     <p class="sub">You and ${esc(otherName)}'s shared watchlist — anything either of you queues up here, you both see.</p>
@@ -2356,7 +2356,7 @@ function renderWatch(){
     <p class="sub">Queued up for future you. Rank them once you've watched.</p>
     ${items.length >= 2 ? `<div style="margin-bottom:14px"><button class="pillbtn acc" id="pickBtn">🎲 Pick tonight's movie for me</button></div>` : ""}
     ${items.length ? `<div class="card">${rows}</div>`
-      : `<div class="empty"><div class="big" aria-hidden="true">🍿</div><p>Your watchlist is empty. Browse and bookmark anything you want to see.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+      : `<div class="empty"><div class="big" aria-hidden="true">🍿</div><p>Your watchlist is empty. Browse and queue up anything you want to see.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
 }
 /* taste-weighted random pick from the watchlist */
 function pickTonight(prevId){
