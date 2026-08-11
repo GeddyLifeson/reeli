@@ -122,6 +122,11 @@ function seed(){
     // see the comment above profileHeatmapHTML() for why this is the only
     // honest source of per-ranking dates the app has.
     rankTimes:{},
+    // "already celebrated, never show again" markers for the full-screen
+    // milestone moments (see openMilestoneSheet()) — same one-shot idea as
+    // feedSeen/notifSeen above, just three flags instead of a timestamp
+    // watermark since each of these fires at most once, ever, ever again.
+    milestonesShown:{first:false, fifty:false, anniversary1:false},
   };
 }
 function load(){
@@ -138,6 +143,7 @@ function load(){
         if(!s.dislikes) s.dislikes = {};
         if(!s.rewatches) s.rewatches = {};
         if(!s.rankTimes) s.rankTimes = {};
+        if(!s.milestonesShown) s.milestonesShown = {first:false, fifty:false, anniversary1:false};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
@@ -656,6 +662,9 @@ function nav(to){
   $("#screenTag").textContent = TAGS[to];
   render(to);
   if(to === "feed" && authed()){ markFeedSeen(); refreshCloudFeed(); refreshNotifs(); }
+  // date-based, not action-based (see checkAnniversaryMilestone()'s comment):
+  // checked every time the profile tab is opened, a no-op once already shown
+  if(to === "profile") checkAnniversaryMilestone();
   window.scrollTo({top:0});
   // the screen swap is a DOM replacement, not a page load, so announce it
   announce(TAGS[to]);
@@ -2819,6 +2828,144 @@ function shareYearlyWrap(){
   if(w.topGenre) bits.push(`Favorite genre: ${w.topGenre[0]}`);
   openShare(`My ${year} on Reeli 🎬\n${bits.join(" · ")}\nWhat's your wrap-up?`, url);
 }
+
+/* ---------- milestone celebrations: first ranking, 50th, one year on Reeli ----------
+   Three genuine "pause and notice this" moments, deliberately full-screen
+   (openSheet + sheet.classList.add("full"), the same mechanism openFullProfile()
+   and openYearlyWrap() use) rather than another toast — this app already has a
+   toast for "ranking undone"/"link copied", and a milestone is meant to read as
+   a bigger deal than that. See S.milestonesShown for the one-shot persistence
+   and placeAt()/maybeShowMilestone() for how the first two get triggered
+   without racing the score-reveal sheet; checkAnniversaryMilestone() below is
+   the date-based third one, fired from nav() on the way into the profile tab. */
+
+/* "when did this person start" — CLOUD.profile.created_at (the account row's
+   own created_at, pulled by pullProfile()'s `select:"*"`) is the cleanest
+   signal where it exists: it's set once, at signup, and never touched again.
+   A guest or a signed-in user PostgREST hasn't returned a profile for yet has
+   no such row, so fall back to the earliest S.rankTimes entry — the same
+   "first-ever ranking" proxy the activity heat map already treats as the
+   honest source of per-ranking dates (see the comment above
+   profileHeatmapHTML()). Either way the result is a real Date or null. */
+function anniversaryReferenceDate(){
+  if(CLOUD.profile && CLOUD.profile.created_at){
+    const d = new Date(CLOUD.profile.created_at);
+    if(!isNaN(d)) return d;
+  }
+  const times = S.rankTimes || {};
+  let earliest = null;
+  for(const id in times){
+    const t = times[id]; if(!t) continue;
+    const d = new Date(t);
+    if(isNaN(d)) continue;
+    if(!earliest || d < earliest) earliest = d;
+  }
+  return earliest;
+}
+/* date-based, not action-based, so this doesn't hook placeAt() at all — it's
+   checked whenever the profile tab is opened (see nav()) and is a no-op
+   instantly once S.milestonesShown.anniversary1 flips, so visiting profile
+   100 times a day never re-shows it. */
+function checkAnniversaryMilestone(){
+  if(S.milestonesShown.anniversary1) return;
+  const ref = anniversaryReferenceDate();
+  if(!ref) return;
+  const anniversary = new Date(ref);
+  anniversary.setUTCFullYear(anniversary.getUTCFullYear() + 1);
+  if(new Date() < anniversary) return;
+  S.milestonesShown.anniversary1 = true;
+  save();
+  openMilestoneSheet("anniversary1", ref);
+}
+/* a handful of small falling/rotating rects, CSS-only, staggered by
+   animation-delay — cheap enough to be tasteful rather than gimmicky, and
+   confined to the top of the screen so it never fights the copy underneath */
+function confettiHTML(){
+  const colors = ["var(--gold)", "var(--good)", "var(--accent)", "var(--mid)", "var(--bad)"];
+  let out = "";
+  for(let i = 0; i < 14; i++){
+    const left = (i * 7.1 + 3) % 100;
+    const delay = (i % 7) * 0.11;
+    const dur = 1.9 + (i % 5) * 0.3;
+    out += `<span class="confetti-piece" style="left:${left.toFixed(1)}%;background:${colors[i % colors.length]};animation-delay:${delay.toFixed(2)}s;animation-duration:${dur.toFixed(2)}s"></span>`;
+  }
+  return `<div class="confetti" aria-hidden="true">${out}</div>`;
+}
+let MILESTONE_ACTIVE = null; // which one the open sheet is showing — read by shareMilestone()
+function openMilestoneSheet(which, refDate){
+  MILESTONE_ACTIVE = which;
+  openSheet(milestoneHTML(which, refDate));
+  sheet.classList.add("full");
+  hydratePosters(sheet);
+}
+function closeMilestone(){ MILESTONE_ACTIVE = null; closeSheet(); }
+function milestoneHTML(which, refDate){
+  const close = `<div class="fullhead"><button class="pillbtn soft" id="milestoneClose" aria-label="Close celebration">✕ Close</button></div>`;
+  if(which === "first"){
+    const m = PLACED_ID && getMovie(PLACED_ID);
+    const sc = PLACED_ID ? scoreOf(PLACED_ID) : null;
+    return `<div class="fullprofile milestone">${close}${confettiHTML()}
+      <span class="wraplabel">REWIND • FIRST TAPE</span>
+      <h1 class="h1" style="margin-top:14px">Your first tape's been shelved.</h1>
+      <p class="sub">One ranked. Every list starts with one — this is where yours begins.</p>
+      ${m ? `<div class="result" style="margin-top:6px">${posterHTML(m,"p-lg")}<h2>${esc(m.title)}</h2>${sc != null ? scoreHTML(sc,"bigscore") : ""}</div>` : ""}
+      ${milestoneActionsHTML()}
+    </div>`;
+  }
+  if(which === "fifty"){
+    const d = profileData();
+    return `<div class="fullprofile milestone">${close}${confettiHTML()}
+      <span class="wraplabel">REWIND • 50 RANKED</span>
+      <h1 class="h1" style="margin-top:14px">Fifty and counting.</h1>
+      <p class="sub">You've ranked fifty titles. That's a real list now, not a start.</p>
+      <div class="stats">
+        <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
+        <div class="stat"><div class="n">${d.avg}</div><div class="l">Avg score</div></div>
+        <div class="stat"><div class="n" style="font-size:14px">${d.topGenres.length ? esc(d.topGenres[0][0]) : "—"}</div><div class="l">Top genre</div></div>
+      </div>
+      ${milestoneActionsHTML()}
+    </div>`;
+  }
+  // anniversary1
+  const d = profileData();
+  const since = refDate ? refDate.toLocaleDateString(undefined, {month:"long", year:"numeric"}) : null;
+  return `<div class="fullprofile milestone">${close}${confettiHTML()}
+    <span class="wraplabel">MEMBER SINCE • YEAR ONE</span>
+    <h1 class="h1" style="margin-top:14px">One year on Reeli.</h1>
+    <p class="sub">${since ? `Since ${esc(since)}. ` : ""}A whole year of arguing with yourself about what's actually good.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
+      <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
+      <div class="stat"><div class="n">${d.avg}</div><div class="l">Avg score</div></div>
+    </div>
+    ${milestoneActionsHTML()}
+  </div>`;
+}
+function milestoneActionsHTML(){
+  return `<div style="display:flex;gap:9px;margin-top:22px;flex-wrap:wrap">
+      <button class="pillbtn acc" id="milestoneShare" style="flex:1;padding:12px">Share</button>
+      <button class="pillbtn" id="milestoneDone" style="flex:1;padding:12px">Keep going</button>
+    </div>`;
+}
+function milestoneShareCopy(which){
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  if(which === "first"){
+    const m = PLACED_ID && getMovie(PLACED_ID);
+    return {text: `Just ranked my first title on Reeli 🎬${m ? `\nFirst up: ${m.title}` : ""}\nStarting my list — what's yours?`, url};
+  }
+  if(which === "fifty"){
+    const d = profileData();
+    return {text: `50 titles ranked on Reeli 🎬\nAvg score: ${d.avg}${d.topGenres.length ? " · Favorite genre: " + d.topGenres[0][0] : ""}`, url};
+  }
+  return {text: `One year on Reeli 🎬\n${S.loved.length + S.fine.length + S.disliked.length} titles ranked and counting.`, url};
+}
+function shareMilestone(){
+  if(!MILESTONE_ACTIVE) return;
+  const {text, url} = milestoneShareCopy(MILESTONE_ACTIVE);
+  openShare(text, url);
+}
+
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -3376,6 +3523,9 @@ const CLICK_IDS = {
   wrapBtn:        () => openYearlyWrap(),
   wrapClose:      () => closeSheet(),
   wrapShare:      () => shareYearlyWrap(),
+  milestoneClose: () => closeMilestone(),
+  milestoneDone:  () => closeMilestone(),
+  milestoneShare: () => shareMilestone(),
   resetBtn:       () => resetEverything(),
   shareProfBtn:   () => openShare("Check my movie taste on Reeli 🎬",
                       location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle)),
@@ -3413,8 +3563,11 @@ const CLICK_IDS = {
   csave:          () => saveCustomMovie(),
   ccancel:        () => closeSheet(),
   // ranking result
-  doneBtn:        () => { commitTake(); closeSheet(); nav("ranks"); },
-  moreBtn:        () => { commitTake(); if(S.lbQueue && S.lbQueue.length){ S.lbQueue = []; save(); } closeSheet(); nav("search"); },
+  doneBtn:        () => { commitTake(); closeSheet(); nav("ranks"); maybeShowMilestone(); },
+  moreBtn:        () => { commitTake(); if(S.lbQueue && S.lbQueue.length){ S.lbQueue = []; save(); } closeSheet(); nav("search"); maybeShowMilestone(); },
+  // mid-import: a milestone earned here waits — showing it now would
+  // interrupt the Letterboxd queue's own flow. It stays pending and surfaces
+  // the moment the import run actually ends at doneBtn/moreBtn above.
   lbNext:         () => { commitTake(); rankNextImport(); },
   undoBtn:        () => undoPlacement(),
   // wallpaper picker
@@ -3721,6 +3874,17 @@ function placeAt(idx){
   S.myFeed.unshift({movie:R.id, score:sc, ts, note:"", likes:0, rank:rk});
   if(S.myFeed.length > 6) S.myFeed.pop();
   S.rankTimes[R.id] = ts;
+  // milestone check: exactly 1st or 50th ranking ACROSS all types (movies +
+  // shows + anime share one "how long have you been doing this" story, same
+  // as the header stat on the profile screen). Flip the shown-flag right here
+  // so it can only ever fire once — the actual full-screen moment is deferred
+  // to maybeShowMilestone(), called once the normal result-sheet flow (score
+  // reveal, Done/Rank another) has finished, so it never races or competes
+  // with that feedback. undoPlacement() below reverses this flip if the
+  // ranking that earned it gets undone.
+  const totalRanked = allRanked().length;
+  if(!S.milestonesShown.first && totalRanked === 1){ PENDING_MILESTONE = "first"; S.milestonesShown.first = true; }
+  else if(!S.milestonesShown.fifty && totalRanked === 50){ PENDING_MILESTONE = "fifty"; S.milestonesShown.fifty = true; }
   save();
   // catalog movies arrive without genre/director — backfill so lists show them
   enrich(R.id, ok => { if(ok){ save(); if(cur === "ranks") renderRanks(); } });
@@ -3743,6 +3907,18 @@ function placeAt(idx){
 /* the movie the result sheet is about — R is cleared as soon as it opens, so
    Done / Rank another / Undo read this instead */
 let PLACED_ID = null;
+/* a milestone earned by the placement just made (see placeAt()), waiting for
+   the normal result-sheet flow to finish before it gets its own full-screen
+   moment — see maybeShowMilestone(). null the rest of the time. */
+let PENDING_MILESTONE = null;
+/* called once Done / Rank another / the next Letterboxd import has taken over
+   the screen, so the celebration never races the score reveal or delays it */
+function maybeShowMilestone(){
+  if(!PENDING_MILESTONE) return;
+  const which = PENDING_MILESTONE;
+  PENDING_MILESTONE = null;
+  openMilestoneSheet(which);
+}
 /* the hot-take box is optional and unsubmitted; harvest it before leaving */
 function commitTake(){
   const inp = $("#takeInp");
@@ -3758,6 +3934,9 @@ function undoPlacement(){
   removeRanking(PLACED_ID);
   delete S.notes[PLACED_ID];
   if(S.myFeed.length && S.myFeed[0].movie === PLACED_ID) S.myFeed.shift();
+  // the placement that just earned a milestone never happened after all —
+  // un-flip it so a re-ranked 1st/50th can still earn it for real later
+  if(PENDING_MILESTONE){ S.milestonesShown[PENDING_MILESTONE] = false; PENDING_MILESTONE = null; }
   save(); closeSheet(); render(cur); toast("Ranking undone");
 }
 
