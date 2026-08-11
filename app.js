@@ -1757,7 +1757,7 @@ function renderRanks(){
           `<button class="seg ${rankFilter===k?"cur":""}" data-filter="${k}">${l}</button>`).join("")}
       </div>
       ${genres.length >= 2 ? `<div class="segs" style="margin-top:-6px">
-        ${genres.map(g => `<button class="seg ${rankGenre===g?"cur":""}" data-gfilter="${esc(g)}" style="padding:5px 11px;font-size:11.5px">${esc(g)}</button>`).join("")}
+        ${genres.map(g => `<button class="seg sm ${rankGenre===g?"cur":""}" data-gfilter="${esc(g)}">${esc(g)}</button>`).join("")}
       </div>` : ""}
       <div class="card">${rows || `<div class="empty"><p>Nothing matches this filter yet.</p></div>`}</div>`;
   }

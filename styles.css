@@ -158,7 +158,13 @@
 
   /* segmented filter */
   .segs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
-  .seg{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:7px 14px;font-size:12.5px;font-weight:600;color:var(--muted)}
+  /* min-height, not just padding — the ~44px floor is the actual iOS/Android
+     tap-target guideline, and padding alone drifts with font metrics.
+     .seg.sm (the secondary genre-filter row) opts out: it's a dense,
+     lower-stakes refinement row, not a primary control. */
+  .seg{border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:0 14px;min-height:44px;
+    display:inline-flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:600;color:var(--muted)}
+  .seg.sm{min-height:0;padding:5px 11px;font-size:11.5px}
   .seg.cur{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 
   /* search */
