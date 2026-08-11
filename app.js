@@ -2311,6 +2311,90 @@ function profileHeatmapHTML(){
       </div>
     </div>`;
 }
+/* ---------- taste twins: the Reeli users whose rankings line up closest
+   with yours ----------
+   There is no "browse all users" query available (rankings/likes/dislikes/
+   follows are all publicly SELECT-able, but profiles is too — no admin-only
+   directory to page through), so candidates are found the same way the rest
+   of the app finds cross-user signal: through rows you can already see.
+   Query public.rankings for movie_id IN (your own top-scored titles, capped
+   at 60 so the querystring stays sane) and user_id != you, then group the
+   results client-side by user_id. Whoever shares the most titles with you is
+   worth computing a match% for (same exact formula openPerson() uses for its
+   ring, reused verbatim rather than reinvented) — top 8 by overlap count,
+   scored, then trimmed to the best 5 by match%. A candidate needs at least 3
+   shared titles to count; a single shared title can produce a meaningless
+   100% "twin" and that's worse than showing nothing.
+   This only makes sense for a signed-in user with cloud rankings to compare
+   against (gated the same way every other cloud-only profile section is:
+   d.cloud, i.e. authed() && CLOUD.profile) and is fetched on demand, not on
+   every render — a render-snapshot fuzz run calls renderProfile() with no
+   network available, so the result lives in a module-level cache
+   (TASTE_TWINS: null until fetched, [] once fetched-but-nothing-worth-
+   showing, an array of twins once found) exactly like TAKES_CACHE gates
+   takesSectionHTML(). tasteTwinsHTML() below only ever reads that cache —
+   fetchTasteTwins() is the only thing allowed to populate it. */
+let TASTE_TWINS = null, TWINS_LOADING = false;
+async function fetchTasteTwins(){
+  if(TWINS_LOADING || !authed() || !CLOUD.profile) return;
+  TWINS_LOADING = true;
+  refreshTwinsSection();
+  try{
+    const myIds = allRanked().slice(0, 60); // top-scored titles only — keeps the `in.()` filter bounded
+    if(myIds.length < 3){ TASTE_TWINS = []; return; }
+    const r = await sb(pgPath("rankings", {movie_id:pgIn(myIds), user_id:pgNeq(myId()), select:"user_id,movie_id,score"}));
+    if(!r.ok) return; // leave TASTE_TWINS as-is so the button stays put for a retry
+    const byUser = new Map();
+    (await r.json()).forEach(row => {
+      if(!byUser.has(row.user_id)) byUser.set(row.user_id, []);
+      byUser.get(row.user_id).push(row);
+    });
+    const candidates = [...byUser.entries()]
+      .filter(([, overlap]) => overlap.length >= 3)   // one shared title isn't a "twin", it's a coincidence
+      .sort((a, b) => b[1].length - a[1].length)
+      .slice(0, 8)
+      .map(([user_id, overlap]) => ({
+        user_id, n: overlap.length,
+        // the exact match% formula openPerson() uses for its ring — reused, not reinvented
+        match: Math.min(99, Math.max(35, Math.round(97 - (overlap.reduce((a, x) => a + Math.abs(Number(x.score) - scoreOf(x.movie_id)), 0) / overlap.length) * 9))),
+      }))
+      .sort((a, b) => b.match - a.match)
+      .slice(0, 5);
+    if(!candidates.length){ TASTE_TWINS = []; return; }
+    const pr = await sb(pgPath("profiles", {id:pgIn(candidates.map(c => c.user_id)), select:"id,handle,display_name,avatar_hue,avatar_url"}));
+    const profiles = pr.ok ? await pr.json() : [];
+    const byId = new Map(profiles.map(p => [p.id, p]));
+    TASTE_TWINS = candidates.map(c => ({...c, profile: byId.get(c.user_id)})).filter(c => c.profile);
+  }catch(e){ logErr("finding taste twins", e); }
+  finally{ TWINS_LOADING = false; refreshTwinsSection(); }
+}
+/* targeted refresh, same idea as toggleMate()'s takesInner nudge — the fetch
+   above is kicked off from a button inside this section, so only this section
+   needs to redraw, not the whole profile screen (which would jump scroll) */
+function refreshTwinsSection(){
+  const el = document.getElementById("twinsSection");
+  if(el) el.innerHTML = tasteTwinsInnerHTML();
+}
+function tasteTwinsInnerHTML(){
+  if(TASTE_TWINS === null)
+    return `<div class="sechead">Taste twins</div>
+      <div class="card" style="padding:14px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+        <span class="d" style="color:var(--muted);font-size:12.5px;line-height:1.5;flex:1;min-width:180px">See which Reeli users' rankings line up closest with yours.</span>
+        <button class="pillbtn acc" id="tasteTwinsBtn" ${TWINS_LOADING ? "disabled" : ""}>${TWINS_LOADING ? "Finding…" : "Find my taste twins"}</button>
+      </div>`;
+  if(!TASTE_TWINS.length) return ""; // fetched, but nobody cleared the 3-shared-title bar — skip silently
+  return `<div class="sechead">Taste twins</div>
+    <div class="card">${TASTE_TWINS.map(t => `<button class="row" data-person="${esc(t.user_id)}">
+      ${avatarHTML(t.profile.display_name, t.profile.avatar_hue, t.profile.avatar_url, "width:30px;height:30px;font-size:12px")}
+      <span class="meta"><span class="t" style="font-size:13px">${esc(t.profile.display_name)}</span>
+        <span class="d">@${esc(t.profile.handle)} · ${t.n} shared title${t.n===1?"":"s"}</span></span>
+      <span class="match">${t.match}%</span>
+    </button>`).join("")}</div>`;
+}
+function tasteTwinsHTML(d){
+  if(!d.cloud) return "";
+  return `<div id="twinsSection">${tasteTwinsInnerHTML()}</div>`;
+}
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -2404,6 +2488,7 @@ function profileHTML(d){
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
     ${profileHeatmapHTML()}
+    ${tasteTwinsHTML(d)}
     ${profilePodiumHTML()}
     ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
@@ -2850,6 +2935,7 @@ const CLICK_IDS = {
   logoutBtn2:     () => doLogout(),
   tasteBtn:       () => { O = null; openOnboarding(1); },
   wallBtn:        () => openWallPicker(),
+  tasteTwinsBtn:  () => fetchTasteTwins(),
   signupBtn:      () => openAuthSheet("signup"),
   loginBtn:       () => openAuthSheet("login"),
   exportBtn:      () => exportBackup(),
