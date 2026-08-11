@@ -1826,6 +1826,23 @@ let query = "", searchType = "movie", liveResults = [], liveState = "idle", live
 // client-side format filter for the Anime tab's trending/library lists — no
 // extra network request, since `.format` is already on every anime item
 let animeFormat = "all";
+/* pick the single loved movie to anchor "Because you loved X" on — the
+   highest-scored item in S.loved that's actually a movie (loved also holds
+   ranked shows/anime, which have no local library to recommend from). null
+   once the user hasn't loved a movie yet, and the section stays hidden. */
+function lovedMovieAnchor(){
+  const ids = S.loved.filter(id => typeOf(id) === "movie");
+  if(!ids.length) return null;
+  return ids.reduce((best, id) => scoreOf(id) > scoreOf(best) ? id : best);
+}
+/* similarity of a candidate to one specific loved movie — same genre/director
+   match weights tasteScore() uses, but anchored on that title's own
+   genre/director rather than the aggregate S.taste vector. tasteScore() is
+   folded in as a tiebreaker so, among equally-similar candidates, the ones
+   that also fit the user's broader taste sort first. */
+function similarityTo(anchor, m){
+  return (anchor.genre && m.genre === anchor.genre ? 2 : 0) + (anchor.dir && m.dir === anchor.dir ? 3 : 0);
+}
 function movieRowHTML(m){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
   return `<div class="row">
@@ -1905,8 +1922,19 @@ function renderSearch(){
     const rows = list.map(movieRowHTML).join("");
     const trend = TRENDING.movie;
     const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    // "Because you loved X" — anchored on one specific loved movie, not the
+    // abstract taste vector. Same pool the "Picked for your taste" list above
+    // already built; just re-scored against the anchor and excluded from it.
+    const anchorId = !q ? lovedMovieAnchor() : null;
+    const anchor = anchorId ? getMovie(anchorId) : null;
+    const anchorRows = anchor
+      ? pool.filter(m => !isRanked(m.id) && m.id !== anchor.id)
+          .sort((a,b) => similarityTo(anchor,b) - similarityTo(anchor,a) || tasteScore(b) - tasteScore(a))
+          .slice(0, 6).map(movieRowHTML).join("")
+      : "";
     body = `
       ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+      ${anchorRows ? `<div class="sechead">Because you loved ${esc(anchor.title)}</div><div class="card">${anchorRows}</div>` : ""}
       ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
       ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
   } else {
