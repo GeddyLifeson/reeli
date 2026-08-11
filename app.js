@@ -681,7 +681,9 @@ fetch(SUPA_URL + pgPath("profiles", {select:"avatar_url", limit:1}),
   .catch(e => logErr("avatar_url column probe", e));
 let AUTH = null;
 try{ AUTH = JSON.parse(localStorage.getItem(AUTH_KEY)) || null; }catch(e){ logErr("reading the saved session", e); }
-const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), myDislikes:new Set(), notifs:[] };
+/* parties: every watch party you're in, keyed by the OTHER person's id
+   (whichever side of the owner/partner row you're on) — see pullWatchParties() */
+const CLOUD = { profile:null, profileLoaded:false, follows:new Set(), feed:[], myLikes:new Set(), myDislikes:new Set(), notifs:[], parties:new Map() };
 function saveAuth(a){ AUTH = a; try{ a ? localStorage.setItem(AUTH_KEY, JSON.stringify(a)) : localStorage.removeItem(AUTH_KEY); }catch(e){ logErr("saving the session", e); } }
 function authed(){ return !!(AUTH && AUTH.access_token); }
 function myId(){ return AUTH && AUTH.user ? AUTH.user.id : null; }
@@ -969,6 +971,19 @@ async function pullRewatches(){
   (await rw.json()).forEach(x => { counts[x.movie_id] = (counts[x.movie_id] || 0) + 1; });
   S.rewatches = counts;
 }
+/* every watch party you're in, whichever side of the owner/partner row you're
+   on. Unlike everything else pullCloud() reads, watch parties have no local
+   S.* mirror at all — party membership only ever makes sense for a signed-in
+   user looking at a Reelmate, so there's nothing for a guest to carry across
+   a login the way S.watch or S.loved do. This just warms CLOUD.parties so the
+   "Start a watch party" / "Watch party ✓" button on a profile sheet can
+   render synchronously instead of firing a query per profile opened. */
+async function pullWatchParties(){
+  const me = myId();
+  const r = await sb(pgPath("watch_parties", {select:"*", or:`(owner.eq.${pgVal(me)},partner.eq.${pgVal(me)})`}));
+  if(!r.ok) return;
+  CLOUD.parties = new Map((await r.json()).map(p => [p.owner === me ? p.partner : p.owner, p]));
+}
 async function pullCloud(){
   if(!authed()) return;
   PULLING = true;
@@ -984,6 +999,7 @@ async function pullCloud(){
     step = "likes";     await pullLikes();
     step = "dislikes";  await pullDislikes();
     step = "rewatches"; await pullRewatches();
+    step = "parties";   await pullWatchParties();
     save();
   }catch(e){ logErr("pullCloud/" + step, e); }
   PULLING = false;
@@ -1320,6 +1336,7 @@ async function openPerson(id){
         ${p.taste && p.taste.genres && p.taste.genres.length ? `<div class="chips" style="margin-top:8px">${p.taste.genres.slice(0,4).map(g => `<span class="chip" style="padding:4px 9px;font-size:11px">${esc(g)}</span>`).join("")}</div>` : ""}
         <div class="dactions">
           ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+          ${isMe ? "" : watchPartyBtnHTML(id)}
           <button class="pillbtn" id="pshare">Share</button>
           <button class="pillbtn" id="pfull">View full profile</button>
         </div>
@@ -1410,6 +1427,7 @@ async function openFullProfile(){
       </div>
       <div class="dactions" style="margin:10px 0 14px">
         ${isMe ? "" : `<button class="pillbtn ${following?"soft":"acc"}" id="pfollow">${following ? "Reelmates ✓" : "Add Reelmate"}</button>`}
+        ${isMe ? "" : watchPartyBtnHTML(id)}
         <button class="pillbtn" id="pshare">Share</button>
       </div>
       <div class="stats">
@@ -1447,6 +1465,129 @@ function shareSheetPerson(){
   if(!SHEET_PERSON) return;
   openShare(`${SHEET_PERSON.name}'s movie taste on Reeli 🎬`,
     location.origin + location.pathname + "?u=" + encodeURIComponent(SHEET_PERSON.handle));
+}
+
+/* ---------- watch party: a shared watchlist between two Reelmates ----------
+   Deliberately separate from the private, per-user watchlist above (S.watch /
+   public.watchlist) — that table is owner-only readable by design, so it can
+   never be the thing two people co-edit. A watch party is its own table pair
+   (see supabase-schema.sql), and unlike everything else in S/CLOUD it has no
+   local mirror at all: party membership only exists for a signed-in user
+   looking at a Reelmate's profile, so there's nothing to keep offline. */
+
+/* "Start a watch party" / "Watch party ✓" on an open profile sheet or full
+   profile. Cloud-only and Reelmate-only by nature, so it's gated on authed()
+   alone (never on d.cloud/CLOUD.profile) the same way other authed-only
+   affordances are — a guest viewing a public profile just doesn't see it. */
+function watchPartyBtnHTML(id){
+  if(!authed()) return "";
+  const has = CLOUD.parties.has(id);
+  return `<button class="pillbtn ${has ? "soft" : "acc"}" id="wpBtn">${has ? "Watch party ✓" : "Start a watch party"}</button>`;
+}
+/* re-reads CLOUD.parties/SHEET_PERSON at click time, same reasoning as
+   toggleSheetPerson(): a stale sheet must not create a second party. */
+function toggleSheetWatchParty(){
+  if(!SHEET_PERSON) return;
+  const {id, name} = SHEET_PERSON;
+  const existing = CLOUD.parties.get(id);
+  if(existing) openWatchParty(existing, name); else startWatchParty(id, name);
+}
+/* live existence check for one pair. CLOUD.parties is warmed once at login by
+   pullWatchParties(), so this is only a fallback for the case that cache
+   can't already answer — the other person started the party in this same
+   session, or the app never went through a login pull to begin with. */
+async function fetchPartyWith(otherId){
+  const me = myId();
+  const r = await sb(pgPath("watch_parties", {select:"*",
+    or:`(and(owner.eq.${pgVal(me)},partner.eq.${pgVal(otherId)}),and(owner.eq.${pgVal(otherId)},partner.eq.${pgVal(me)}))`}));
+  if(!r.ok) return null;
+  return (await r.json())[0] || null;
+}
+async function startWatchParty(otherId, otherName){
+  openSheet(`<div class="empty" style="padding:30px"><p>Starting a watch party…</p></div>`);
+  let party = CLOUD.parties.get(otherId) || await fetchPartyWith(otherId);
+  if(!party){
+    const r = await sb(pgPath("watch_parties"), {method:"POST", headers:{Prefer:"return=representation"},
+      body: JSON.stringify({owner: myId(), partner: otherId})});
+    if(r.ok) party = (await r.json())[0];
+    else if(r.status === 409) party = await fetchPartyWith(otherId); // lost a race with the other side
+  }
+  if(!party){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't start a watch party — try again.</p></div>`); return; }
+  CLOUD.parties.set(otherId, party);
+  toast("Watch party started 🎬");
+  openWatchParty(party, otherName);
+}
+let WATCH_PARTY = null; // {id, otherId, otherName, addOpen, items} — the party sheet currently open, if any
+async function openWatchParty(party, otherName){
+  WATCH_PARTY = {id: party.id, otherId: party.owner === myId() ? party.partner : party.owner,
+    otherName, addOpen: false, items: []};
+  renderWatchPartySheet(true);
+  const r = await sb(pgPath("watch_party_items", {party_id:pgEq(party.id), select:"*", order:"added_at.desc"}));
+  if(!WATCH_PARTY || WATCH_PARTY.id !== party.id) return; // sheet moved on while this was in flight
+  WATCH_PARTY.items = r.ok ? await r.json() : [];
+  renderWatchPartySheet();
+}
+/* modeled closely on renderWatch(): same .card/.row/poster/meta layout, just
+   sourced from WATCH_PARTY.items instead of S.watch, plus who-added-it and an
+   inline "add from your watchlist" panel instead of a search shortcut. */
+function renderWatchPartySheet(loading){
+  if(!WATCH_PARTY) return;
+  if(loading){ openSheet(`<div class="empty" style="padding:30px"><p>Loading watch party…</p></div>`); return; }
+  const {items, otherName, addOpen} = WATCH_PARTY, me = myId();
+  const rows = items.map(it => { const m = getMovie(it.movie_id) || rowToMovie(it);
+    return `<div class="row">
+      ${posterHTML(m,"p-sm")}
+      <button class="meta" data-open="${esc(it.movie_id)}" style="text-align:left;min-width:0">
+        <span class="t">${esc(it.title)}</span><span class="d">${esc(mline(m))} · added by ${it.added_by === me ? "you" : esc(otherName)}</span>
+      </button>
+      <button class="iconbtn" data-wpremove="${esc(it.movie_id)}" aria-label="Remove from watch party">
+        <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+    </div>`; }).join("");
+  const addCands = S.watch.map(getMovie).filter(m => m && !items.some(it => it.movie_id === m.id));
+  const addHTML = !addOpen ? "" : `<div class="sechead">Add from your watchlist</div>${
+    addCands.length ? `<div class="card">${addCands.map(m => `<div class="row">
+        ${posterHTML(m,"p-sm")}
+        <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span></span>
+        <button class="pillbtn acc" data-wpadd="${esc(m.id)}">Add</button>
+      </div>`).join("")}</div>`
+      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — bookmark something first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+  openSheet(`
+    <h1 class="h1">Watch party</h1>
+    <p class="sub">You and ${esc(otherName)}'s shared watchlist — anything either of you queues up here, you both see.</p>
+    <div style="margin-bottom:14px"><button class="pillbtn ${addOpen ? "soft" : "acc"}" id="wpAddToggle">${addOpen ? "Close" : "+ Add from watchlist"}</button></div>
+    ${addHTML}
+    ${items.length ? `<div class="card">${rows}</div>`
+      : `<div class="empty"><div class="big" aria-hidden="true">🎬</div><p>No titles yet — add something you both want to watch together.</p></div>`}`);
+}
+function toggleWatchPartyAdd(){
+  if(!WATCH_PARTY) return;
+  WATCH_PARTY.addOpen = !WATCH_PARTY.addOpen;
+  renderWatchPartySheet();
+}
+async function addToWatchParty(movieId){
+  if(!WATCH_PARTY) return;
+  const m = getMovie(movieId); if(!m) return;
+  const partyId = WATCH_PARTY.id, c = cacheEntry(movieId);
+  const row = {party_id: partyId, movie_id: movieId, title: m.title,
+    year: typeof m.year === "number" ? m.year : null, genre: m.genre || null, director: m.dir || null,
+    poster: m.poster || (c ? c.u : null), media_type: typeOf(movieId), added_by: myId()};
+  const r = await sb(pgPath("watch_party_items", {on_conflict:"party_id,movie_id"}),
+    {method:"POST", headers:{Prefer:"resolution=merge-duplicates,return=representation"}, body: JSON.stringify(row)});
+  if(!r.ok){ toast("Couldn't add to the watch party — try again"); return; }
+  if(!WATCH_PARTY || WATCH_PARTY.id !== partyId) return; // sheet moved on while this was in flight
+  const saved = (await r.json())[0] || row;
+  if(!WATCH_PARTY.items.some(it => it.movie_id === movieId)) WATCH_PARTY.items.unshift(saved);
+  toast("Added to the watch party 🎬");
+  renderWatchPartySheet();
+}
+async function removeFromWatchParty(movieId){
+  if(!WATCH_PARTY) return;
+  const partyId = WATCH_PARTY.id;
+  await sb(pgPath("watch_party_items", {party_id:pgEq(partyId), movie_id:pgEq(movieId)}), {method:"DELETE"});
+  if(!WATCH_PARTY || WATCH_PARTY.id !== partyId) return; // sheet moved on while this was in flight
+  WATCH_PARTY.items = WATCH_PARTY.items.filter(it => it.movie_id !== movieId);
+  toast("Removed from watch party");
+  renderWatchPartySheet();
 }
 
 /* ---- social sign-in (Supabase OAuth: works per-provider once configured in the dashboard) ---- */
@@ -1620,7 +1761,7 @@ function pickHue(el, attr){
 async function doLogout(){
   try{ await sb("/auth/v1/logout", {method:"POST"}); }catch(e){ logErr("server-side logout (signing out locally anyway)", e); }
   saveAuth(null);
-  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.myDislikes = new Set(); CLOUD.notifs = [];
+  CLOUD.profile = null; CLOUD.profileLoaded = false; CLOUD.follows = new Set(); CLOUD.feed = []; CLOUD.myLikes = new Set(); CLOUD.myDislikes = new Set(); CLOUD.notifs = []; CLOUD.parties = new Map();
   setNotifBadge(0);
   S.profile = null; S.guestChosen = false; save(); render(cur); toast("Logged out");
   showGate();
@@ -3054,6 +3195,8 @@ const CLICK_ROUTES = [
   ["rate",        el => startRate(el.dataset.rate)],
   ["watch",       el => toggleWatch(el.dataset.watch)],
   ["unwatch",     el => removeFromWatch(el.dataset.unwatch)],
+  ["wpadd",       el => addToWatchParty(el.dataset.wpadd)],
+  ["wpremove",    el => removeFromWatchParty(el.dataset.wpremove)],
   ["like",        el => toggleLocalLike(el.dataset.like)],
   ["clike",       el => { const [u, mv] = el.dataset.clike.split("|"); toggleCloudLike(u, mv, el); }],
   ["dislike",     el => toggleLocalDislike(el.dataset.dislike)],
@@ -3135,6 +3278,8 @@ const CLICK_IDS = {
   esave:          () => saveAccountForm(),
   // public profile sheet
   pfollow:        () => toggleSheetPerson(),
+  wpBtn:          () => toggleSheetWatchParty(),
+  wpAddToggle:    () => toggleWatchPartyAdd(),
   pshare:         () => shareSheetPerson(),
   pfull:          () => openFullProfile(),
   pfullClose:     () => closeSheet(),

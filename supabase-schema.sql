@@ -142,3 +142,64 @@ create policy "users log their own rewatches"
   on public.rewatches for insert with check ((select auth.uid()) = user_id);
 create policy "users delete their own rewatch entries"
   on public.rewatches for delete using ((select auth.uid()) = user_id);
+
+-- ============ watch_parties: a shared watchlist between two Reelmates ============
+-- Deliberately separate from public.watchlist above (which is private, owner-only
+-- readable, and never touched by this feature) — a watch party is a second,
+-- distinct concept: one row per (owner, partner) pair, readable by BOTH of
+-- them. Storing one row per undirected pair (rather than two rows, one per
+-- direction) keeps the RLS policy a single boolean check — "am I the owner or
+-- the partner?" — instead of needing a matching mirror row kept in sync on
+-- every insert/delete. Starting a party is enough to prove intent; there is no
+-- separate accept flow, so `owner` is just whoever clicked first.
+create table public.watch_parties (
+  id uuid primary key default gen_random_uuid(),
+  owner uuid not null references public.profiles(id) on delete cascade,
+  partner uuid not null references public.profiles(id) on delete cascade,
+  created_at timestamptz not null default now(),
+  unique(owner, partner),
+  check (owner <> partner)
+);
+alter table public.watch_parties enable row level security;
+create policy "watch parties readable by owner or partner"
+  on public.watch_parties for select using ((select auth.uid()) in (owner, partner));
+create policy "users start a watch party as the owner"
+  on public.watch_parties for insert with check ((select auth.uid()) = owner);
+create policy "only the owner deletes their watch party"
+  on public.watch_parties for delete using ((select auth.uid()) = owner);
+
+-- reverse lookup: "is there already a party where I'm the partner?" (the
+-- primary key already covers "where I'm the owner")
+create index watch_parties_partner_idx on public.watch_parties (partner);
+
+-- ============ watch_party_items: one row per title added to a watch party ============
+create table public.watch_party_items (
+  id bigint generated always as identity primary key,
+  party_id uuid not null references public.watch_parties(id) on delete cascade,
+  movie_id text not null,
+  title text not null,
+  year int, genre text, director text, poster text,
+  media_type text not null default 'movie' check (media_type in ('movie','show','anime')),
+  added_by uuid not null references public.profiles(id),
+  added_at timestamptz not null default now(),
+  unique(party_id, movie_id)
+);
+alter table public.watch_party_items enable row level security;
+-- every policy below joins back through party_id to watch_parties to ask the
+-- same question watch_parties' own policy asks: is the caller the owner or
+-- the partner of the party this item belongs to?
+create policy "watch party items readable by either party"
+  on public.watch_party_items for select using (
+    exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+create policy "either party adds items"
+  on public.watch_party_items for insert with check (
+    (select auth.uid()) = added_by
+    and exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+create policy "either party removes items"
+  on public.watch_party_items for delete using (
+    exists (select 1 from public.watch_parties wp
+      where wp.id = party_id and (select auth.uid()) in (wp.owner, wp.partner)));
+
+create index watch_party_items_party_idx on public.watch_party_items (party_id);
