@@ -1873,6 +1873,65 @@ function profilePodiumHTML(){
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
   }).join("");
 }
+/* franchise/collection mini-podiums, movies only (dir semantics + prefix
+   heuristics below don't map cleanly onto shows/anime). This is inherently
+   fuzzy, so we keep two independent signals and don't try to fuse them into
+   a real franchise database:
+     1) director groups — 3+ ranked movies sharing the same non-empty,
+        non-"—" .dir is the highest-confidence signal already in the data.
+     2) title-prefix groups — strip common sequel/subtitle suffixes (", The",
+        a colon-and-subtitle, trailing "Part II"/"Part Two"/roman numerals,
+        a trailing number) via normT() and group movies whose normalized
+        base title matches; 2+ matches counts as a "collection". This
+        catches obvious sequels (e.g. "Movie" + "Movie II") but is not a
+        real franchise map — false positives/negatives are expected on edge
+        cases (reused subtitles, reboots, titles that are legitimately just
+        a roman numeral, etc).
+   Shows at most 4 groups, largest group first (ties broken by original
+   allRanked order, i.e. score). */
+function franchiseBaseTitle(title){
+  let t = normT(title).replace(/\bthe\b/g, " ");
+  t = t.replace(/\b(part\s+)?(ii|iii|iv|v|vi|vii|viii|ix|x)\b\s*$/, "");
+  t = t.replace(/\bpart\s+(one|two|three|four|five)\b\s*$/, "");
+  t = t.replace(/\b\d+\b\s*$/, "");
+  return t.trim();
+}
+function profileFranchisesHTML(){
+  const ids = allRanked("movie");
+  if(ids.length < 2) return "";
+  const byDir = new Map(), byBase = new Map();
+  ids.forEach(id => {
+    const m = getMovie(id);
+    if(m.dir && m.dir !== "—"){
+      if(!byDir.has(m.dir)) byDir.set(m.dir, []);
+      byDir.get(m.dir).push(id);
+    }
+    const base = franchiseBaseTitle(m.title);
+    if(base){
+      if(!byBase.has(base)) byBase.set(base, []);
+      byBase.get(base).push(id);
+    }
+  });
+  const groups = [];
+  byDir.forEach((groupIds, dir) => { if(groupIds.length >= 3) groups.push({label: dir, ids: groupIds}); });
+  byBase.forEach((groupIds, base) => {
+    if(groupIds.length < 2) return;
+    // label with the shortest title in the group — usually the original
+    // entry, before any "Part II"/subtitle got appended
+    const label = groupIds.map(id => getMovie(id).title).sort((a,b) => a.length - b.length)[0];
+    groups.push({label, ids: groupIds});
+  });
+  if(!groups.length) return "";
+  groups.forEach(g => { g.ids.sort((a,b) => ids.indexOf(a) - ids.indexOf(b)); });
+  groups.sort((a,b) => b.ids.length - a.ids.length);
+  return groups.slice(0,4).map(g => {
+    return `<div class="sechead">${esc(g.label)}</div><div class="card">${
+        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+          <span class="rankno">${i+1}</span>${posterHTML(m,"p-sm")}
+          <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
+          ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
+  }).join("");
+}
 function profileActionsHTML(d){
   return `<div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
       ${d.cloud ? `<button class="pillbtn soft" id="shareProfBtn">Share my profile</button>` : ""}
@@ -1893,6 +1952,7 @@ function profileHTML(d){
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
     ${profilePodiumHTML()}
+    ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
     <button class="danger" id="resetBtn">Reset all my data</button>
     <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
