@@ -641,11 +641,39 @@ function clearSyncPending(){
 
 /* ---------- navigation ---------- */
 const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank anything", watch:"Watchlist", profile:"Profile"};
+/* left-to-right order of the bottom-nav buttons, read from the DOM rather than
+   hard-coded, so the slide direction below always matches what's on screen */
+const NAV_ORDER = Array.from(document.querySelectorAll(".nav [data-nav]")).map(b => b.dataset.nav);
+const REDUCE_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 let cur = "feed";
+let navSlideTimer = null;
 function nav(to){
+  const from = cur;
+  const switching = to !== from && NAV_ORDER.includes(from);
   cur = to;
-  document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
-  $("#scr-"+to).classList.add("on");
+  const toEl = $("#scr-"+to);
+
+  // a tap mid-transition shouldn't leave the previous outgoing screen stuck
+  // half-slid — finish whatever was in flight before starting a new one
+  if(navSlideTimer){ clearTimeout(navSlideTimer); navSlideTimer = null; }
+  document.querySelectorAll(".screen").forEach(s =>
+    s.classList.remove("slide-out-l", "slide-out-r", "slide-in-l", "slide-in-r"));
+
+  if(switching && !REDUCE_MOTION){
+    // "which aisle is further right" — slide toward the tab you tapped
+    const fromEl = $("#scr-"+from);
+    const forward = NAV_ORDER.indexOf(to) > NAV_ORDER.indexOf(from);
+    fromEl.classList.add(forward ? "slide-out-l" : "slide-out-r");
+    toEl.classList.add("on", forward ? "slide-in-r" : "slide-in-l");
+    navSlideTimer = setTimeout(() => {
+      fromEl.classList.remove("on", "slide-out-l", "slide-out-r");
+      toEl.classList.remove("slide-in-l", "slide-in-r");
+      navSlideTimer = null;
+    }, 200);
+  } else {
+    document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+    toEl.classList.add("on");
+  }
   /* `.cur` is the visual state; aria-current is the one a screen reader reads,
      and without it the nav announces five identical-sounding buttons */
   document.querySelectorAll(".nav [data-nav]").forEach(b => {
@@ -2180,6 +2208,20 @@ function movieRowHTML(m){
         <button class="pillbtn acc" data-rate="${m.id}">Rank</button>`}
   </div>`;
 }
+/* placeholder rows shown while trending/live-search results are still on the
+   wire — same geometry as movieRowHTML's poster+title+subtitle so real rows
+   swap in with no layout shift, textured with the CSS-only "tuning in" sweep
+   defined on .skel-poster/.skel-line in styles.css */
+function skeletonRows(n){
+  let out = "";
+  for(let i = 0; i < n; i++){
+    out += `<div class="skel-row" aria-hidden="true">
+      <div class="skel-poster"></div>
+      <div class="skel-meta"><div class="skel-line"></div><div class="skel-line sm"></div></div>
+    </div>`;
+  }
+  return out;
+}
 function switchSearchType(t){
   if(t === searchType || !TYPES.includes(t)) return;
   searchType = t;
@@ -2246,6 +2288,7 @@ function renderSearch(){
     const rows = list.map(movieRowHTML).join("");
     const trend = TRENDING.movie;
     const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const trendSkel = (!q && trend === "loading") ? `<div class="sechead">Popular movies</div><div class="card">${skeletonRows(4)}</div>` : "";
     // "Because you loved X" — anchored on one specific loved movie, not the
     // abstract taste vector. Same pool the "Picked for your taste" list above
     // already built; just re-scored against the anchor and excluded from it.
@@ -2257,7 +2300,7 @@ function renderSearch(){
           .slice(0, 6).map(movieRowHTML).join("")
       : "";
     body = `
-      ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+      ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : trendSkel}
       ${anchorRows ? `<div class="sechead">Because you loved ${esc(anchor.title)}</div><div class="card">${anchorRows}</div>` : ""}
       ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
       ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
@@ -2284,7 +2327,7 @@ function renderSearch(){
     const customRows = customList.filter(matchesFormat).map(movieRowHTML).join("");
     const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map(movieRowHTML).join("") : "";
     const trendEmpty = !q && !trendRows
-      ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
+      ? trend === "loading" ? `<div class="sechead">Trending ${label}</div><div class="card">${skeletonRows(4)}</div>`
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
         : ""
       : "";
@@ -2306,7 +2349,7 @@ function renderSearch(){
   if(q){
     const liveRows = liveResults.map(movieRowHTML).join("");
     liveHTML = `<div class="sechead">Worldwide catalog</div><div class="card">${
-      liveState === "loading" ? `<div class="empty" style="padding:22px"><p>Searching the worldwide catalog…</p></div>`
+      liveState === "loading" ? skeletonRows(4)
       : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
       : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
   }

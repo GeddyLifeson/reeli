@@ -144,10 +144,28 @@
   .top .iconbtn{border-color:transparent;background:rgba(255,255,255,.08);color:var(--nav-ink)}
 
   /* screens */
-  .screens{flex:1;padding:0 0 92px}
+  .screens{flex:1;padding:0 0 92px;position:relative;overflow-x:clip}
   .screen{display:none}
   .screen.on{display:block;animation:fade .18s ease}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  /* tab-switch slide: "walking down the aisle" — both the outgoing and
+     incoming screen are briefly stacked and absolutely positioned so they can
+     pass each other, direction set in JS from the two tabs' left-to-right
+     order in the bottom nav. Kept fast (nav() runs this on every tap) and it
+     is animation-driven so prefers-reduced-motion's global `animation:none`
+     kill-switch (top of file) turns it off for free — nav() also checks the
+     same media query in JS so it skips the whole absolute-position dance
+     rather than leaving a screen invisibly stuck mid-flight. */
+  .screen.slide-out-l,.screen.slide-out-r,.screen.slide-in-l,.screen.slide-in-r{
+    display:block;position:absolute;top:0;left:0;width:100%}
+  .screen.on.slide-out-l{animation:slideOutL .19s ease both}
+  .screen.on.slide-out-r{animation:slideOutR .19s ease both}
+  .screen.on.slide-in-l{animation:slideInL .19s ease both}
+  .screen.on.slide-in-r{animation:slideInR .19s ease both}
+  @keyframes slideOutL{to{transform:translateX(-100%)}}
+  @keyframes slideOutR{to{transform:translateX(100%)}}
+  @keyframes slideInL{from{transform:translateX(-100%)}to{transform:none}}
+  @keyframes slideInR{from{transform:translateX(100%)}to{transform:none}}
   /* the general-purpose "just arrived" entrance — chips, feed cards, stat
      tiles all use this so a re-rendered screen feels like it's being placed
      down rather than just appearing */
@@ -202,6 +220,29 @@
   .s-good{background:var(--good-soft);color:var(--good);border-color:var(--good)}
   .s-mid{background:var(--mid-soft);color:var(--mid);border-color:var(--mid)}
   .s-bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad)}
+
+  /* skeleton rows: "tuning in" — while search/trending waits on the network,
+     row-shaped placeholders (same poster/text geometry as .row/.p-sm, so
+     nothing shifts once real rows land) sweep with a diagonal static-band
+     like a paused tape waiting to spin up. Same weight/palette as the REC
+     dot and the .app aisle-floor stripe — a moving gradient, no JS loop, and
+     it's animation-driven so prefers-reduced-motion turns it into a plain
+     static placeholder for free. */
+  .skel-row{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .skel-row:last-child{border-bottom:none}
+  .skel-poster{width:44px;height:62px;border-radius:6px;flex:none}
+  .skel-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .skel-line{height:10px;border-radius:5px;width:78%}
+  .skel-line.sm{height:8px;width:42%}
+  .skel-poster,.skel-line{
+    background-image:repeating-linear-gradient(-45deg,
+        color-mix(in srgb, var(--ink) 5%, var(--surface2)) 0 6px,
+        var(--surface2) 6px 14px),
+      linear-gradient(100deg, transparent 35%, color-mix(in srgb, var(--ink) 10%, transparent) 50%, transparent 65%);
+    background-size:auto, 220% 100%;
+    background-position:0 0, 120% 0;
+    animation:skelSweep 1.5s ease-in-out infinite}
+  @keyframes skelSweep{to{background-position:0 0, -20% 0}}
 
   /* list rows */
   .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
