@@ -21,6 +21,11 @@
     --nav-bg:#0F1E4A; --nav-ink:#C9D3EE; --nav-cur:#F2B705;
     --display:"Futura","Futura PT","Avenir Next","Century Gothic","Trebuchet MS",system-ui,sans-serif;
     --body:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    /* the VCR-clock digit face — every numeric readout (scores, stats, the
+       matchup counter) uses this instead of --display, for the cassette-deck
+       LED feel. Phosphor amber in dark mode, ink-on-paper in light. */
+    --mono:"SF Mono","JetBrains Mono","Roboto Mono","Courier New",monospace;
+    --phosphor:#123C82;
   }
   @media (prefers-color-scheme: dark){
     :root{
@@ -34,6 +39,7 @@
       --shadow:0 10px 30px rgba(0,0,0,.55);
       --pop:3px 3px 0 rgba(0,0,0,.6);
       --nav-bg:#080E24; --nav-ink:#8E9BCB; --nav-cur:#F2B705;
+      --phosphor:#3FCB77;
     }
   }
   :root[data-theme="light"]{
@@ -47,6 +53,7 @@
     --shadow:0 10px 26px rgba(21,36,82,.16);
     --pop:3px 3px 0 rgba(21,36,82,.9);
     --nav-bg:#0F1E4A; --nav-ink:#C9D3EE; --nav-cur:#F2B705;
+    --phosphor:#123C82;
   }
   :root[data-theme="dark"]{
     --bg:#0B1226; --frame:#070B18; --surface:#131C3B; --surface2:#1A254A;
@@ -126,7 +133,14 @@
   .logo svg circle[fill]{fill:var(--gold)!important}
   .wordmark{font-family:var(--display);font-weight:800;font-size:22px;letter-spacing:1px;color:var(--gold);
     text-transform:uppercase;text-shadow:1px 1px 0 rgba(0,0,0,.35)}
-  .screen-tag{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--nav-ink);font-weight:700}
+  .screen-tag{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--nav-ink);font-weight:700;
+    display:inline-flex;align-items:center;gap:6px}
+  /* a REC light for whatever screen is live right now, camcorder-style —
+     prefers-reduced-motion already forces every animation off globally
+     (see the @media rule near the top), so this degrades to a static dot */
+  .screen-tag::before{content:"";width:7px;height:7px;border-radius:50%;background:#ff4444;
+    box-shadow:0 0 5px #ff4444;animation:rec 1.8s ease-in-out infinite}
+  @keyframes rec{0%,100%{opacity:1}50%{opacity:.35}}
   .top .iconbtn{border-color:transparent;background:rgba(255,255,255,.08);color:var(--nav-ink)}
 
   /* screens */
@@ -134,6 +148,10 @@
   .screen{display:none}
   .screen.on{display:block;animation:fade .18s ease}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  /* the general-purpose "just arrived" entrance — chips, feed cards, stat
+     tiles all use this so a re-rendered screen feels like it's being placed
+     down rather than just appearing */
+  @keyframes riseIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
   .pad{padding:16px 18px}
   .h1{font-family:var(--display);font-weight:800;font-size:24px;margin:4px 0 2px;text-wrap:balance;
     letter-spacing:.2px}
@@ -147,8 +165,9 @@
   .nav button{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;color:var(--nav-ink);font-size:10.5px;font-weight:700;letter-spacing:.03em;border-radius:10px;text-transform:uppercase}
   .badge{position:absolute;top:2px;left:calc(50% + 4px);background:var(--gold);color:var(--gold-ink);
     font-size:9.5px;font-weight:800;border-radius:999px;min-width:16px;height:16px;
-    display:flex;align-items:center;justify-content:center;padding:0 4px}
+    display:flex;align-items:center;justify-content:center;padding:0 4px;animation:badgeIn .25s cubic-bezier(.3,1.8,.4,1) both}
   .badge:empty{display:none}
+  @keyframes badgeIn{from{transform:scale(0)}to{transform:scale(1)}}
   .nav button.cur{color:var(--nav-cur)}
   .nav svg{width:22px;height:22px}
   .nav .plus{margin:-26px auto 0;width:54px;height:54px;border-radius:50%;background:var(--gold);color:var(--gold-ink);
@@ -174,23 +193,26 @@
   .p-md{width:58px;height:82px}.p-md .init{font-size:21px}
   .p-lg{width:96px;height:136px;border-radius:8px}.p-lg .init{font-size:34px}.p-lg .yr{font-size:10px}
 
-  /* score badge: a rental price tag — chunky ring, tabular numerals, a hard
-     little sticker shadow so it looks stuck on rather than floating */
+  /* score badge: a VCR counter readout welded onto a rental price tag —
+     monospace digits with a faint phosphor glow, tabular so they don't
+     jitter the ring width between scores, a hard sticker shadow */
   .score{width:42px;height:42px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
-    font-family:var(--display);font-weight:800;font-size:14.5px;font-variant-numeric:tabular-nums;border:2.5px solid transparent;
-    box-shadow:2px 2px 0 rgba(0,0,0,.14)}
+    font-family:var(--mono);font-weight:700;font-size:13.5px;font-variant-numeric:tabular-nums;border:2.5px solid transparent;
+    box-shadow:2px 2px 0 rgba(0,0,0,.14);text-shadow:0 0 6px color-mix(in srgb, currentColor 55%, transparent)}
   .s-good{background:var(--good-soft);color:var(--good);border-color:var(--good)}
   .s-mid{background:var(--mid-soft);color:var(--mid);border-color:var(--mid)}
   .s-bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad)}
 
   /* list rows */
   .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
-  .row{display:flex;align-items:center;gap:12px;padding:11px 14px;width:100%;text-align:left;border-bottom:1px solid var(--line)}
+  .row{display:flex;align-items:center;gap:12px;padding:11px 14px;width:100%;text-align:left;border-bottom:1px solid var(--line);
+    transition:background-color .15s ease}
+  .row:active{background:var(--surface2)}
   .row:last-child{border-bottom:none}
   .row .meta{flex:1;min-width:0}
   .row .t{font-weight:650;font-size:14.5px;line-height:1.25;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .row .d{color:var(--muted);font-size:12px;margin-top:2px;display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .rankno{font-family:var(--display);font-weight:800;font-size:13px;color:var(--muted);width:26px;flex:none;text-align:center;font-variant-numeric:tabular-nums}
+  .rankno{font-family:var(--mono);font-weight:700;font-size:12.5px;color:var(--muted);width:26px;flex:none;text-align:center;font-variant-numeric:tabular-nums}
 
   /* buttons: chunky, bordered, a hard offset shadow like a physical kiosk
      button — pressed :active state pushes it flat against its shadow */
@@ -199,8 +221,10 @@
   .pillbtn:active{transform:translate(2px,2px);box-shadow:none}
   .pillbtn.acc{background:var(--accent);border-color:var(--accent);color:var(--on-accent);box-shadow:var(--pop)}
   .pillbtn.soft{background:var(--accent-soft);border-color:transparent;color:var(--accent);box-shadow:none}
-  .iconbtn{width:34px;height:34px;border-radius:50%;border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex:none;color:var(--muted);background:var(--surface)}
+  .iconbtn{width:34px;height:34px;border-radius:50%;border:1.5px solid var(--line);display:flex;align-items:center;justify-content:center;flex:none;color:var(--muted);background:var(--surface);
+    transition:transform .1s ease,color .15s ease,border-color .15s ease,background-color .15s ease}
   .iconbtn.on{color:var(--accent);border-color:var(--accent);background:var(--accent-soft)}
+  .iconbtn:active{transform:scale(.88)}
 
   /* segmented filter */
   .segs{display:flex;gap:8px;margin:0 0 14px;flex-wrap:wrap}
@@ -210,9 +234,11 @@
      lower-stakes refinement row, not a primary control. */
   .seg{border:1.5px solid var(--line);background:var(--surface);border-radius:999px;padding:0 14px;min-height:44px;
     display:inline-flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700;color:var(--muted);
-    text-transform:uppercase;letter-spacing:.02em}
+    text-transform:uppercase;letter-spacing:.02em;
+    transition:transform .1s ease,background-color .15s ease,color .15s ease,border-color .15s ease}
   .seg.sm{min-height:0;padding:5px 11px;font-size:11.5px;text-transform:none;letter-spacing:normal}
   .seg.cur{background:var(--nav-bg);color:var(--gold);border-color:var(--nav-bg)}
+  .seg:active{transform:scale(.96)}
 
   /* search */
   .searchbar{display:flex;align-items:center;gap:10px;background:var(--surface);border:1.5px solid var(--line);
@@ -230,7 +256,7 @@
 
   /* feed */
   .fgrid{display:grid;grid-template-columns:1fr;gap:12px}
-  .fitem{background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:14px}
+  .fitem{background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:14px;animation:riseIn .32s ease both}
   .fhead{display:flex;align-items:center;gap:10px;margin-bottom:10px}
   .avatar{width:36px;height:36px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;
     color:#fff;font-weight:800;font-size:13px;font-family:var(--display)}
@@ -255,8 +281,9 @@
      grid wider than its container instead of the columns shrinking to fit,
      overflowing the screen horizontally on the narrowest phones */
   .stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-bottom:16px}
-  .stat{background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:12px 10px;text-align:center;box-shadow:2px 2px 0 rgba(0,0,0,.06)}
-  .stat .n{font-family:var(--display);font-weight:800;font-size:21px;font-variant-numeric:tabular-nums;color:var(--accent)}
+  .stat{background:var(--surface);border:1.5px solid var(--line);border-radius:12px;padding:12px 10px;text-align:center;box-shadow:2px 2px 0 rgba(0,0,0,.06);animation:riseIn .3s ease both}
+  .stat .n{font-family:var(--mono);font-weight:700;font-size:20px;font-variant-numeric:tabular-nums;color:var(--phosphor);
+    text-shadow:0 0 8px color-mix(in srgb, var(--phosphor) 45%, transparent)}
   .stat .l{color:var(--muted);font-size:10.5px;letter-spacing:.1em;text-transform:uppercase;font-weight:700;margin-top:3px}
   .distrow{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12.5px}
   .distrow .lbl{width:74px;color:var(--muted);font-weight:700;flex:none}
@@ -264,7 +291,8 @@
   .distrow .fill{display:block;height:100%;border-radius:6px}
   .distrow .cnt{width:22px;text-align:right;font-variant-numeric:tabular-nums;color:var(--muted);flex:none}
   .chips{display:flex;gap:8px;flex-wrap:wrap}
-  .chip{background:var(--surface);border:1.5px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--muted)}
+  .chip{background:var(--surface);border:1.5px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12px;font-weight:700;color:var(--muted);
+    animation:riseIn .3s ease both}
   .danger{color:var(--bad);font-weight:700;font-size:13px;margin-top:18px}
 
   .empty{text-align:center;padding:44px 24px;color:var(--muted)}
@@ -297,7 +325,9 @@
 
   /* rate flow */
   .buckets{display:grid;gap:10px;margin-top:14px}
-  .bucket{display:flex;align-items:center;gap:12px;border-radius:12px;padding:14px;border:1.5px solid var(--line);background:var(--surface);text-align:left}
+  .bucket{display:flex;align-items:center;gap:12px;border-radius:12px;padding:14px;border:1.5px solid var(--line);background:var(--surface);text-align:left;
+    transition:transform .1s ease,border-color .15s ease}
+  .bucket:active{transform:scale(.98)}
   .bucket .dot{width:34px;height:34px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center}
   .bucket b{font-size:15px;display:block}
   .bucket span{color:var(--muted);font-size:12px}
@@ -306,11 +336,17 @@
   .contender:active{transform:scale(.97)}
   .contender .t{font-weight:650;font-size:13px;line-height:1.3}
   .contender .d{color:var(--muted);font-size:11px}
+  /* a tape-reel hub instead of a plain badge — dashed ring reads as sprocket
+     teeth at this size */
   .vs{font-family:var(--display);font-weight:800;color:var(--gold-ink);background:var(--gold);border-radius:50%;
-    width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:11px}
+    width:28px;height:28px;display:flex;align-items:center;justify-content:center;font-size:11px;
+    border:2px dashed var(--gold-ink)}
   .tiebtn{display:block;margin:0 auto;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
   .result{display:flex;flex-direction:column;align-items:center;text-align:center;gap:12px;padding:8px 0 4px}
-  .result .bigscore{width:84px;height:84px;font-size:28px}
+  /* the payoff moment — every other reveal in the app is a quiet fade, this
+     one gets to pop */
+  .result .bigscore{width:84px;height:84px;font-size:28px;animation:scoreIn .38s cubic-bezier(.2,1.6,.4,1) both}
+  @keyframes scoreIn{from{opacity:0;transform:scale(.4) rotate(-8deg)}to{opacity:1;transform:none}}
   .result h2{font-family:var(--display);font-size:22px;margin:0;text-wrap:balance}
   .result p{color:var(--muted);font-size:13.5px;margin:0;line-height:1.5}
   .step{font-size:11px;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);font-weight:700;text-align:center}
@@ -346,17 +382,22 @@
   .ordiv{display:flex;align-items:center;gap:12px;color:var(--muted);font-size:11px;letter-spacing:.12em;text-transform:uppercase;font-weight:700}
   .ordiv::before,.ordiv::after{content:"";flex:1;height:1px;background:var(--line)}
   .swatches{display:flex;gap:9px;justify-content:center;padding:2px 0}
-  .swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent}
+  .swatch{width:30px;height:30px;border-radius:50%;border:2px solid transparent;transition:transform .12s ease,border-color .15s ease}
+  .swatch:active{transform:scale(.85)}
   .swatch.cur{border-color:var(--ink)}
   .authnote{text-align:center;color:var(--muted);font-size:11.5px;line-height:1.5;max-width:340px;margin:14px auto 0}
   .ghostlink{display:block;margin:14px auto 0;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
 
   /* onboarding taste picker */
   .chipgrid{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}
-  .chippick{border:1.5px solid var(--line);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:700;background:var(--surface);color:var(--muted)}
+  .chippick{border:1.5px solid var(--line);border-radius:999px;padding:8px 14px;font-size:13px;font-weight:700;background:var(--surface);color:var(--muted);
+    transition:transform .1s ease,background-color .15s ease,border-color .15s ease,color .15s ease}
+  .chippick:active{transform:scale(.95)}
   .chippick.sel{background:var(--accent);color:var(--on-accent);border-color:var(--accent)}
   .pickgrid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin:14px 0 4px}
-  .pcard{border:2px solid var(--line);border-radius:10px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--surface);position:relative}
+  .pcard{border:2px solid var(--line);border-radius:10px;padding:8px 6px;display:flex;flex-direction:column;align-items:center;gap:6px;background:var(--surface);position:relative;
+    transition:transform .1s ease,border-color .15s ease,background-color .15s ease}
+  .pcard:active{transform:scale(.96)}
   .pcard.sel{border-color:var(--accent);background:var(--accent-soft)}
   .pcard.sel::after{content:"✓";position:absolute;top:6px;right:8px;width:20px;height:20px;border-radius:50%;
     background:var(--gold);color:var(--gold-ink);font-size:12px;font-weight:800;display:flex;align-items:center;justify-content:center}
@@ -371,7 +412,9 @@
     border-radius:999px;padding:5px 10px;flex:none;font-variant-numeric:tabular-nums}
   .matchring{width:74px;height:74px;border-radius:50%;display:flex;align-items:center;justify-content:center;flex:none;
     font-family:var(--display);font-weight:800;font-size:17px;color:var(--accent);
-    background:conic-gradient(var(--gold) calc(var(--pct)*1%), var(--line) 0);position:relative}
+    background:conic-gradient(var(--gold) calc(var(--pct)*1%), var(--line) 0);position:relative;
+    animation:ringIn .5s cubic-bezier(.2,1.4,.4,1) both}
+  @keyframes ringIn{from{opacity:0;transform:scale(.6) rotate(-90deg)}to{opacity:1;transform:none}}
   .matchring::before{content:"";position:absolute;inset:6px;border-radius:50%;background:var(--surface)}
   .matchring span{position:relative}
   .bothrow{display:grid;grid-template-columns:1fr auto auto;gap:10px;align-items:center;padding:9px 0;border-bottom:1px solid var(--line);font-size:13.5px}
