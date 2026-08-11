@@ -2518,13 +2518,76 @@ function profileIdentityLine(d){
   if(d.needsSetup) return "signed in — pick a handle";
   return esc(d.P.handle) + " · guest mode";
 }
+/* stable pseudo-random "card number" from a handle — same rolling-hash idea
+   as hueFromTitle above (multiply-and-mod a running total over the string's
+   char codes), just widened from a 0-360 hue range to an 8-digit card number
+   and grouped like a real membership card instead of fed into hsl(). Guests
+   land on "@guest" like everyone else pre-setup, so they still get a (stable,
+   shared) number rather than a blank field. */
+function memberCardNumber(handle){
+  let hash = 0;
+  const s = String(handle || "@guest");
+  for(const ch of s) hash = (hash*31 + ch.charCodeAt(0)) % 100000000;
+  const digits = String(hash).padStart(8,"0");
+  return digits.slice(0,4) + " " + digits.slice(4);
+}
+/* "MEMBER SINCE" reads off profiles.created_at (pulled via pullProfile()'s
+   select:"*"), month + year only — a card wouldn't print the exact minute you
+   signed up either, and it sidesteps timezone-of-day edge cases in a field
+   that's meant to be glanceable, not precise. Returns null (never a fabricated
+   date) for guests and for any cloud profile whose row predates this field. */
+function memberSinceLabel(d){
+  if(!d.cloud || !CLOUD.profile.created_at) return null;
+  const dt = new Date(CLOUD.profile.created_at);
+  if(isNaN(dt)) return null;
+  return dt.toLocaleDateString(undefined, {month:"long", year:"numeric", timeZone:"UTC"});
+}
+/* the profile header, reimagined as a laminated video-store membership card.
+   Still handles needsSetup the same way the old plain header did — a stub
+   name/avatar row with no card fields, since there's nothing stable to print
+   on a card yet (no handle, no server-assigned created_at). Edit lives once,
+   on the card itself, so profileBannerHTML's "finish setup" nudge never has
+   to duplicate it. */
 function profileHeadHTML(d){
-  return `<div class="phead">
-      ${avatarHTML(d.needsSetup ? "?" : d.P.name, d.P.hue, d.P.avatarUrl)}
-      <div style="flex:1;min-width:0"><div class="pname">${d.needsSetup ? "Finish setup" : esc(d.P.name)}</div>
+  if(d.needsSetup) return `<div class="phead">
+      ${avatarHTML("?", d.P.hue, null)}
+      <div style="flex:1;min-width:0"><div class="pname">Finish setup</div>
         <div class="phandle">${profileIdentityLine(d)}</div></div>
-      ${d.needsSetup ? "" : `<button class="pillbtn" id="editBtn">Edit</button>`}
     </div>`;
+  const since = memberSinceLabel(d);
+  return `<div class="memcard">
+      <div class="memcard-top">
+        <span class="wraplabel">REELI VIDEO CLUB</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="iconbtn" id="memShareBtn" aria-label="Share my membership card">⇪</button>
+          <button class="pillbtn" id="editBtn">Edit</button>
+        </div>
+      </div>
+      <div class="memcard-body">
+        ${avatarHTML(d.P.name, d.P.hue, d.P.avatarUrl, "width:52px;height:52px;font-size:18px")}
+        <div style="flex:1;min-width:0">
+          <div class="pname">${esc(d.P.name)}</div>
+          <div class="phandle">${profileIdentityLine(d)}</div>
+        </div>
+      </div>
+      <div class="memcard-fields">
+        <div class="memfield"><span class="memlbl">Member No.</span><span class="memval">${memberCardNumber(d.P.handle)}</span></div>
+        ${since ? `<div class="memfield"><span class="memlbl">Member Since</span><span class="memval">${esc(since)}</span></div>` : ""}
+      </div>
+    </div>`;
+}
+/* mirrors shareTopFive()/shareYearlyWrap()'s URL logic exactly — a cloud
+   profile shares a permalink, a guest/local-only user shares the marketing
+   homepage. Recomputes profileData() itself, same as shareYearlyWrap() does
+   for wrapYearStats(), so CLICK_IDS can call it with no arguments. */
+function shareMembershipCard(){
+  const d = profileData();
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  const since = memberSinceLabel(d);
+  const bits = [`Card #${memberCardNumber(d.P.handle)}`];
+  if(since) bits.unshift(`Member since ${since}`);
+  openShare(`My Reeli Video Club membership card 🎬📼\n${bits.join(" · ")}\nWhat's yours?`, url);
 }
 /* the call-to-action card above the stats. Signed in with a profile: nothing to
    nag about. Signed in without one: sync is silently off, say so. Guest: offer
@@ -3463,6 +3526,7 @@ const CLICK_ROUTES = [
 const CLICK_IDS = {
   // profile
   editBtn:        () => openAccountForm(),
+  memShareBtn:    () => shareMembershipCard(),
   finishSetupBtn: () => openClaimHandle(),
   logoutBtn:      () => doLogout(),
   logoutBtn2:     () => doLogout(),
