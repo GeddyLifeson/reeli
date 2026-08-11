@@ -96,6 +96,17 @@ export function makeSeed(i, DB){
     myFeed.push(item);
   }
 
+  /* rankTimes: a per-movie last-known ranking timestamp, but only for a slice
+     of already-ranked ids — mirrors production, where a real date is only
+     known for some rankings (recently placed, or backfilled from a cloud
+     pull), never the entire history. Index-derived, like `legacy` above, so
+     this doesn't consume the rng and reshuffle any other seed's draws. */
+  const rankTimes = {};
+  all.forEach((id, idx) => {
+    if((i + idx) % 3 === 0)
+      rankTimes[id] = `2026-${String(1 + (i + idx) % 12).padStart(2, "0")}-${String(1 + (i * 7 + idx * 13) % 27).padStart(2, "0")}T00:00:00Z`;
+  });
+
   const people = [];
   for(let p = 0; p < Math.floor(r() * 4); p++)
     people.push({id: "p" + p, handle: pick(["a_b", "zoe"]), name: pick(NASTY) || "P",
@@ -111,7 +122,7 @@ export function makeSeed(i, DB){
       loved, fine, disliked, watch, custom,
       likes: {me0: r() < .5, me1: r() < .5},
       dislikes: {me2: r() < .3},
-      notes, myFeed, feedSeen: "", notifSeen: "",
+      notes, myFeed, feedSeen: "", notifSeen: "", rankTimes,
       /* also index-derived, for the same reason as `legacy` above */
       lbQueue: i % 4 === 1 ? all.slice(0, i % 3) : [],
       ui: {accent: r() < .5 ? null : pick([355, 42, 218, 275, 105]), wall: r() < .5 ? null : "tt0068646", wallTitle: r() < .5 ? null : pick(NASTY)},
