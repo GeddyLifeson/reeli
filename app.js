@@ -116,6 +116,12 @@ function seed(){
     notifSeen:"",
     lbQueue:[],
     ui:{accent:null, wall:null, wallTitle:null},
+    // id -> ISO timestamp of the last time that movie was (re)ranked. Stamped
+    // by placeAt() going forward and backfilled from Supabase's
+    // rankings.updated_at/created_at by pullRankings() for signed-in users —
+    // see the comment above profileHeatmapHTML() for why this is the only
+    // honest source of per-ranking dates the app has.
+    rankTimes:{},
   };
 }
 function load(){
@@ -131,6 +137,7 @@ function load(){
         if(!s.notes) s.notes = {};
         if(!s.dislikes) s.dislikes = {};
         if(!s.rewatches) s.rewatches = {};
+        if(!s.rankTimes) s.rankTimes = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
         if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
         if(!("notifSeen" in s)) s.notifSeen = "";
@@ -268,7 +275,10 @@ function scoreOf(id){
 }
 function rankOf(id){ return rankedIndex(typeOf(id)).pos.get(id) || 0; }
 function scoreClass(sc){ return sc >= 6.7 ? "s-good" : sc >= 3.4 ? "s-mid" : "s-bad"; }
-function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); }
+// also drops the ranking's known timestamp — a re-rank (pickBucket) puts a
+// fresh one right back via placeAt(); an actual unrank should not leave a
+// stale date behind for a movie that's no longer ranked
+function removeRanking(id){ for(const b of ["loved","fine","disliked"]) S[b] = S[b].filter(x => x !== id); if(S.rankTimes) delete S.rankTimes[id]; }
 
 /* Tiebreaker: once an item is placed by the binary-search flow, nothing ever
    makes it compete again — two movies that happened to land one slot apart
@@ -904,6 +914,14 @@ async function pullRankings(){
   const tsByMovie = {};
   rows.forEach(r => { tsByMovie[r.movie_id] = r.updated_at || r.created_at; });
   S.myFeed.forEach(f => { if(!f.ts && tsByMovie[f.movie]) f.ts = tsByMovie[f.movie]; });
+  // same map, kept permanently (not just on the 6 most recent feed items) as
+  // S.rankTimes so the activity heat map has real per-ranking dates for a
+  // signed-in user's whole history, not just what's still in S.myFeed. This is
+  // "last touched" per movie (updated_at wins over created_at) rather than
+  // "first ranked" — a re-rank already counts as fresh activity everywhere
+  // else in the app (see touchRanking()), so the heat map treats it the same
+  // way: one day's worth of credit, on whichever day it most recently moved.
+  for(const id in tsByMovie) if(tsByMovie[id]) S.rankTimes[id] = tsByMovie[id];
 }
 async function pullWatchlist(){
   const wl = await sb(pgPath("watchlist", {user_id:pgEq(myId()), select:"*", order:"added_at.desc"}));
@@ -2210,6 +2228,89 @@ function profileGenresHTML(d){
   return `<div class="sechead">Most-ranked genres</div>
       <div class="chips">${d.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>`;
 }
+/* ---------- ranking activity heat map ----------
+   A GitHub-contributions-style calendar of how many rankings happened per day,
+   for roughly the last year.
+
+   DATA-SOURCE DECISION: per-item ranking dates mostly don't exist locally.
+   S.myFeed carries real ISO timestamps (placeAt() stamps them), but it's
+   capped to the 6 most recent placements — nowhere near a year of history.
+   Rather than fabricate dates for older rankings, this reads S.rankTimes: a
+   {movieId: ISO timestamp} map that, unlike myFeed, is never trimmed.
+     - placeAt() writes S.rankTimes[id] the moment a movie is (re)ranked on
+       this device, going forward from whenever this shipped.
+     - pullRankings() additionally backfills it, for signed-in users, from
+       Supabase's rankings.updated_at/created_at — real per-row dates that
+       already made the round trip to the server but previously went nowhere
+       once pulled. That gives a signed-in user's grid real history back to
+       whenever each ranking was created/touched in the cloud.
+   A guest (or a signed-in user before their first cloud pull) only has real
+   dates for whatever they rank from today onward, so their grid legitimately
+   starts sparse. That's shown honestly — via the empty state below when there
+   is no data at all, and via genuinely-empty (0-count) cells everywhere else —
+   never guessed at. */
+function rankDayCounts(){
+  const days = {};
+  let total = 0;
+  const times = S.rankTimes || {}; // legacy/fuzz-seeded states may predate this field
+  for(const id in times){
+    const t = times[id], d = t && new Date(t);
+    if(!t || isNaN(d)) continue;
+    const key = d.toISOString().slice(0, 10);
+    days[key] = (days[key] || 0) + 1;
+    total++;
+  }
+  return {days, total};
+}
+function profileHeatmapHTML(){
+  const {days, total} = rankDayCounts();
+  if(!total)
+    return `<div class="sechead">Ranking activity</div>
+      <div class="card" style="padding:14px">
+        <span class="d" style="color:var(--muted);font-size:12.5px">Your ranking history builds up here over time — keep ranking and a calendar of your activity shows up here.</span>
+      </div>`;
+  const WEEKS = 53; // ~a year, GitHub-style: full calendar weeks, Sun-Sat
+  const today = new Date(); today.setUTCHours(0, 0, 0, 0);
+  const weekEnd = new Date(today);
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + (6 - today.getUTCDay())); // this week's Saturday
+  const start = new Date(weekEnd);
+  start.setUTCDate(start.getUTCDate() - (WEEKS * 7 - 1));
+  let max = 0;
+  for(const k in days) if(days[k] > max) max = days[k];
+  // 4-step shade ramp off the app's own good/surface2 tokens — no new colours.
+  // Bucketed relative to this user's own busiest day, GitHub-style, rather
+  // than fixed counts (a 2-movie day means something different to someone who
+  // ranked 1 thing all year vs 40).
+  const SHADE = ["var(--surface2)",
+    "color-mix(in srgb, var(--good) 35%, var(--surface2))",
+    "color-mix(in srgb, var(--good) 65%, var(--surface2))",
+    "var(--good)"];
+  const level = c => !c ? 0 : c >= max ? 3 : c / max > 2/3 ? 2 : 1;
+  const cells = [];
+  for(let w = 0; w < WEEKS; w++){
+    for(let dow = 0; dow < 7; dow++){
+      const d = new Date(start); d.setUTCDate(d.getUTCDate() + w * 7 + dow);
+      if(d > today){ cells.push(`<div aria-hidden="true"></div>`); continue; } // this week, not reached yet
+      const key = d.toISOString().slice(0, 10), c = days[key] || 0;
+      const label = `${d.toLocaleDateString(undefined, {month:"short", day:"numeric", year:"numeric"})}: ${c ? c + " ranking" + (c === 1 ? "" : "s") : "no rankings"}`;
+      cells.push(`<div style="background:${SHADE[level(c)]}" title="${esc(label)}" aria-hidden="true"></div>`);
+    }
+  }
+  // the grid is a picture, not a set of controls — one role="img" summary
+  // carries the accessible name; per-cell `title`s are a bonus for mouse/
+  // trackpad users, not the primary accessible description
+  return `<div class="sechead">Ranking activity</div>
+    <div class="card" style="padding:14px">
+      <div class="heatwrap">
+        <div class="heatgrid" role="img" aria-label="${total} ranking${total === 1 ? "" : "s"} over the last year, shown as a daily calendar heat map">${cells.join("")}</div>
+      </div>
+      <div style="display:flex;align-items:center;gap:5px;justify-content:flex-end;margin-top:8px">
+        <span class="d" style="color:var(--muted);font-size:10.5px">Less</span>
+        ${SHADE.map(s => `<span style="display:inline-block;width:9px;height:9px;border-radius:2px;background:${s}" aria-hidden="true"></span>`).join("")}
+        <span class="d" style="color:var(--muted);font-size:10.5px">More</span>
+      </div>
+    </div>`;
+}
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -2302,6 +2403,7 @@ function profileHTML(d){
     ${profileCustomizeHTML()}
     ${profileBreakdownHTML(d)}
     ${profileGenresHTML(d)}
+    ${profileHeatmapHTML()}
     ${profilePodiumHTML()}
     ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
@@ -3091,9 +3193,14 @@ function placeAt(idx){
   S.watch = S.watch.filter(x => x !== R.id);
   const m = getMovie(R.id), sc = scoreOf(R.id), rk = rankOf(R.id);
   // store a real timestamp; the feed renders it relative ("2h", "yesterday")
-  // so an item ranked days ago never keeps saying "just now"
-  S.myFeed.unshift({movie:R.id, score:sc, ts: new Date().toISOString(), note:"", likes:0, rank:rk});
+  // so an item ranked days ago never keeps saying "just now". Also stash it in
+  // S.rankTimes, keyed by movie — unlike S.myFeed (capped to 6 entries), this
+  // is never trimmed, so it's the durable record the activity heat map reads
+  // (see profileHeatmapHTML()).
+  const ts = new Date().toISOString();
+  S.myFeed.unshift({movie:R.id, score:sc, ts, note:"", likes:0, rank:rk});
   if(S.myFeed.length > 6) S.myFeed.pop();
+  S.rankTimes[R.id] = ts;
   save();
   // catalog movies arrive without genre/director — backfill so lists show them
   enrich(R.id, ok => { if(ok){ save(); if(cur === "ranks") renderRanks(); } });
