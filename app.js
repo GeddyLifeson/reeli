@@ -115,7 +115,7 @@ function seed(){
     feedSeen:"",
     notifSeen:"",
     lbQueue:[],
-    ui:{accent:null, wall:null, wallTitle:null},
+    ui:{accent:null, wall:null, wallTitle:null, sound:true},
     // id -> ISO timestamp of the last time that movie was (re)ranked. Stamped
     // by placeAt() going forward and backfilled from Supabase's
     // rankings.updated_at/created_at by pullRankings() for signed-in users —
@@ -139,7 +139,8 @@ function load(){
         if(!s.rewatches) s.rewatches = {};
         if(!s.rankTimes) s.rankTimes = {};
         if(!("feedSeen" in s)) s.feedSeen = "";
-        if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
+        if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null, sound:true};
+        if(s.ui.sound === undefined) s.ui.sound = true; // existing saved state predates this field
         if(!("notifSeen" in s)) s.notifSeen = "";
         if(!Array.isArray(s.lbQueue)) s.lbQueue = [];
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
@@ -306,6 +307,104 @@ const $ = sel => document.querySelector(sel);
 /* one place to surface swallowed failures: never changes control flow, just
    makes network/storage problems visible in the console instead of vanishing */
 function logErr(ctx, e){ try{ console.warn("[reeli] " + ctx + " failed:", e); }catch(_){} }
+/* ---------- sound design + haptics ----------
+   Short, in-universe SFX (plastic click / bucket thunk / tape-rewind squeal)
+   synthesized on the fly with Web Audio — no asset pipeline, no network
+   request, no binary files in the repo. Every sound is a few oscillators
+   plus a short gain envelope (attack/decay well under 150ms), kept quiet
+   (peak gain 0.05-0.15) so it reads as UI feedback, not music.
+
+   One toggle (S.ui.sound) gates both channels — sound *and* haptics — rather
+   than two separate settings. They fire at the exact same moments for the
+   exact same reason (physical confirmation of an action), so a user who
+   wants quiet clearly wants both off, and a single obvious switch beats two
+   near-duplicate ones in a settings list already full of little pickers.
+
+   AudioContext needs a user gesture before it's allowed to produce sound in
+   most browsers, so it's created lazily on first use from inside a click
+   handler (never at module load / render time) and reused after that. */
+let SFX_CTX = null;
+function sfxCtx(){
+  if(SFX_CTX) return SFX_CTX;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) return null;
+  SFX_CTX = new AC();
+  return SFX_CTX;
+}
+/* short burst of white noise through a gain envelope — the "texture" half of
+   the click/thunk sounds, giving them a mechanical rattle instead of a pure
+   game-y tone */
+function sfxNoiseBurst(ctx, dest, dur, peak){
+  const n = Math.max(1, Math.round(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for(let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(peak, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  src.connect(g); g.connect(dest);
+  src.start();
+}
+function sfxTone(ctx, dest, {freq, type = "sine", dur, peak, freqEnd}){
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, ctx.currentTime);
+  if(freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, ctx.currentTime + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  osc.connect(g); g.connect(dest);
+  osc.start(); osc.stop(ctx.currentTime + dur + 0.02);
+}
+/* a soft plastic "click" — the sound of a remote/controller button, for a
+   head-to-head pick */
+function sfxClick(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 1400, type: "square", dur: 0.035, peak: 0.06});
+  sfxNoiseBurst(ctx, ctx.destination, 0.02, 0.04);
+}
+/* a satisfying "thunk" — a tape being slotted home, for a ranking placement */
+function sfxThunk(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 180, freqEnd: 90, type: "triangle", dur: 0.11, peak: 0.13});
+  sfxNoiseBurst(ctx, ctx.destination, 0.05, 0.05);
+}
+/* a brief reverse-whir — tape rewinding, for undoing a placement */
+function sfxRewind(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 260, freqEnd: 900, type: "sawtooth", dur: 0.14, peak: 0.05});
+}
+/* a soft whoosh — tape shuttling past the head, for a nav tab switch */
+function sfxWhoosh(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxNoiseBurst(ctx, ctx.destination, 0.09, 0.045);
+}
+/* a restrained, lo-fi positive chime — not built or called by anything yet
+   (no milestone feature exists in this codebase at the time this shipped),
+   but left here as a ready hook: a milestone feature landing later can call
+   playSfx("milestone") without touching this file's sound plumbing. */
+function sfxMilestone(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 523, type: "sine", dur: 0.12, peak: 0.07});
+  sfxTone(ctx, ctx.destination, {freq: 659, type: "sine", dur: 0.14, peak: 0.06});
+}
+const SFX = {click: sfxClick, thunk: sfxThunk, rewind: sfxRewind, whoosh: sfxWhoosh, milestone: sfxMilestone};
+/* the one entry point every call site uses — checks the mute toggle, never
+   throws (some browsers/embedded webviews throw on audio API use outside a
+   user gesture), and never blocks the action it's attached to */
+function playSfx(name){
+  if(!S.ui.sound) return;
+  try{ const fn = SFX[name]; if(fn) fn(); }catch(e){ logErr("playing sfx:" + name, e); }
+}
+/* same gate, same fire-and-forget contract, for the vibration motor */
+function playHaptic(ms){
+  if(!S.ui.sound) return;
+  try{ if(navigator.vibrate) navigator.vibrate(ms); }catch(e){ logErr("vibrating", e); }
+}
+
 /* stable pseudo-random hue from a title, for gradient poster cards.
    Shared by cineToMovie (catalog rows) and rowToMovie (cloud rows) so the same
    movie gets the same colour no matter which path it arrived through. */
@@ -643,6 +742,7 @@ function clearSyncPending(){
 const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank anything", watch:"Watchlist", profile:"Profile"};
 let cur = "feed";
 function nav(to){
+  if(to !== cur) playSfx("whoosh");
   cur = to;
   document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
   $("#scr-"+to).classList.add("on");
@@ -2474,6 +2574,10 @@ function profileCustomizeHTML(){
         <span class="d" style="color:var(--muted);font-size:12px;width:72px;flex:none">Wallpaper</span>
         <button class="pillbtn" id="wallBtn" aria-label="${S.ui.wallTitle ? "Change wallpaper, currently " + esc(S.ui.wallTitle) : "Pick a movie scene as wallpaper"}">${S.ui.wallTitle ? "🎞 " + esc(S.ui.wallTitle) : "Pick a movie scene"}</button>
       </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span class="d" style="color:var(--muted);font-size:12px;width:72px;flex:none">Feedback</span>
+        <button class="iconbtn ${S.ui.sound ? "on" : ""}" id="soundBtn" aria-pressed="${!!S.ui.sound}" aria-label="${S.ui.sound ? "Mute sound and vibration" : "Unmute sound and vibration"}" title="${S.ui.sound ? "Sound + haptics on" : "Sound + haptics off"}">${S.ui.sound ? "🔊" : "🔇"}</button>
+      </div>
     </div>`;
 }
 function profileBreakdownHTML(d){
@@ -3364,6 +3468,7 @@ const CLICK_IDS = {
   logoutBtn2:     () => doLogout(),
   tasteBtn:       () => { O = null; openOnboarding(1); },
   wallBtn:        () => openWallPicker(),
+  soundBtn:       () => { S.ui.sound = !S.ui.sound; save(); renderProfile(); if(S.ui.sound) playSfx("click"); },
   tasteTwinsBtn:  () => fetchTasteTwins(),
   signupBtn:      () => openAuthSheet("signup"),
   loginBtn:       () => openAuthSheet("login"),
@@ -3696,6 +3801,7 @@ function renderMatchup(step){
 /* the user answered the matchup at R.mid */
 function answerMatchup(choice){
   if(!R || R.mid === undefined) return;
+  playSfx("click"); playHaptic(15);
   const verdict = rankChoose(R, R.mid, choice);
   if(verdict) placeAt(verdict.index); else stepCompare();
 }
@@ -3707,6 +3813,7 @@ function realSpliceIndex(idx){
   return arr.indexOf(typed[idx]);
 }
 function placeAt(idx){
+  playSfx("thunk"); playHaptic(28);
   ensureSaved(R.id);
   SYNC_TOUCH = R.id;
   S[R.bucket].splice(realSpliceIndex(idx), 0, R.id);
@@ -3755,6 +3862,7 @@ function commitTake(){
 }
 function undoPlacement(){
   if(!PLACED_ID) return;
+  playSfx("rewind");
   removeRanking(PLACED_ID);
   delete S.notes[PLACED_ID];
   if(S.myFeed.length && S.myFeed[0].movie === PLACED_ID) S.myFeed.shift();
