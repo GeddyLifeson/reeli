@@ -144,14 +144,46 @@
   .top .iconbtn{border-color:transparent;background:rgba(255,255,255,.08);color:var(--nav-ink)}
 
   /* screens */
-  .screens{flex:1;padding:0 0 92px}
+  .screens{flex:1;padding:0 0 92px;position:relative;overflow-x:clip}
   .screen{display:none}
   .screen.on{display:block;animation:fade .18s ease}
   @keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  /* tab-switch slide: "walking down the aisle" — both the outgoing and
+     incoming screen are briefly stacked and absolutely positioned so they can
+     pass each other, direction set in JS from the two tabs' left-to-right
+     order in the bottom nav. Kept fast (nav() runs this on every tap) and it
+     is animation-driven so prefers-reduced-motion's global `animation:none`
+     kill-switch (top of file) turns it off for free — nav() also checks the
+     same media query in JS so it skips the whole absolute-position dance
+     rather than leaving a screen invisibly stuck mid-flight. */
+  .screen.slide-out-l,.screen.slide-out-r,.screen.slide-in-l,.screen.slide-in-r{
+    display:block;position:absolute;top:0;left:0;width:100%}
+  .screen.on.slide-out-l{animation:slideOutL .19s ease both}
+  .screen.on.slide-out-r{animation:slideOutR .19s ease both}
+  .screen.on.slide-in-l{animation:slideInL .19s ease both}
+  .screen.on.slide-in-r{animation:slideInR .19s ease both}
+  @keyframes slideOutL{to{transform:translateX(-100%)}}
+  @keyframes slideOutR{to{transform:translateX(100%)}}
+  @keyframes slideInL{from{transform:translateX(-100%)}to{transform:none}}
+  @keyframes slideInR{from{transform:translateX(100%)}to{transform:none}}
   /* the general-purpose "just arrived" entrance — chips, feed cards, stat
      tiles all use this so a re-rendered screen feels like it's being placed
      down rather than just appearing */
   @keyframes riseIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  /* "stocked onto the shelf" entrance — search results, ranks rows, profile
+     podium/franchise rows: slides in from the side with a slight rotation and
+     a tiny overshoot before settling flat, reading as a VHS box being placed
+     down rather than just a fade. Each row carries its own --i (its index in
+     the list) via inline style so rows stagger in one after another; min()
+     caps the stagger at the 20th row so a long list doesn't crawl in for
+     seconds — everything past #20 still animates, just all at the #20 delay. */
+  @keyframes shelfIn{
+    0%{opacity:0;transform:translateX(-22px) rotate(-4deg)}
+    55%{opacity:1;transform:translateX(3px) rotate(1deg)}
+    100%{opacity:1;transform:none}
+  }
+  .shelf{animation:shelfIn .4s cubic-bezier(.22,.9,.32,1) both;
+    animation-delay:calc(min(var(--i,0),20) * 40ms)}
   .pad{padding:16px 18px}
   .h1{font-family:var(--display);font-weight:800;font-size:24px;margin:4px 0 2px;text-wrap:balance;
     letter-spacing:.2px}
@@ -162,14 +194,21 @@
   .nav{position:fixed;bottom:0;left:50%;transform:translateX(-50%);width:100%;max-width:432px;z-index:30;
     background:var(--nav-bg);border-top:3px solid var(--gold);
     display:grid;grid-template-columns:repeat(5,1fr);align-items:end;padding:6px 6px calc(8px + env(safe-area-inset-bottom))}
-  .nav button{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;color:var(--nav-ink);font-size:10.5px;font-weight:700;letter-spacing:.03em;border-radius:10px;text-transform:uppercase}
+  .nav button{position:relative;display:flex;flex-direction:column;align-items:center;gap:3px;padding:6px 0;color:var(--nav-ink);font-size:10.5px;font-weight:700;letter-spacing:.03em;border-radius:10px;text-transform:uppercase;
+    transition:color .15s ease}
   .badge{position:absolute;top:2px;left:calc(50% + 4px);background:var(--gold);color:var(--gold-ink);
     font-size:9.5px;font-weight:800;border-radius:999px;min-width:16px;height:16px;
     display:flex;align-items:center;justify-content:center;padding:0 4px;animation:badgeIn .25s cubic-bezier(.3,1.8,.4,1) both}
   .badge:empty{display:none}
   @keyframes badgeIn{from{transform:scale(0)}to{transform:scale(1)}}
   .nav button.cur{color:var(--nav-cur)}
-  .nav svg{width:22px;height:22px}
+  /* the current tab's icon gets the same pop the score reveal uses, instead
+     of the label color just snapping over — a subtler cousin of scoreIn, tab
+     switches happen far more often than a match result so the motion is kept
+     small and quick */
+  .nav button.cur svg{animation:tabPop .22s cubic-bezier(.3,1.8,.4,1) both}
+  @keyframes tabPop{from{transform:scale(.8)}to{transform:scale(1)}}
+  .nav svg{width:22px;height:22px;transition:transform .15s ease}
   .nav .plus{margin:-26px auto 0;width:54px;height:54px;border-radius:50%;background:var(--gold);color:var(--gold-ink);
     display:flex;align-items:center;justify-content:center;box-shadow:0 4px 0 rgba(0,0,0,.3),var(--shadow);padding:0;
     border:3px solid var(--nav-bg)}
@@ -202,6 +241,29 @@
   .s-good{background:var(--good-soft);color:var(--good);border-color:var(--good)}
   .s-mid{background:var(--mid-soft);color:var(--mid);border-color:var(--mid)}
   .s-bad{background:var(--bad-soft);color:var(--bad);border-color:var(--bad)}
+
+  /* skeleton rows: "tuning in" — while search/trending waits on the network,
+     row-shaped placeholders (same poster/text geometry as .row/.p-sm, so
+     nothing shifts once real rows land) sweep with a diagonal static-band
+     like a paused tape waiting to spin up. Same weight/palette as the REC
+     dot and the .app aisle-floor stripe — a moving gradient, no JS loop, and
+     it's animation-driven so prefers-reduced-motion turns it into a plain
+     static placeholder for free. */
+  .skel-row{display:flex;align-items:center;gap:12px;padding:11px 14px;border-bottom:1px solid var(--line)}
+  .skel-row:last-child{border-bottom:none}
+  .skel-poster{width:44px;height:62px;border-radius:6px;flex:none}
+  .skel-meta{flex:1;min-width:0;display:flex;flex-direction:column;gap:8px}
+  .skel-line{height:10px;border-radius:5px;width:78%}
+  .skel-line.sm{height:8px;width:42%}
+  .skel-poster,.skel-line{
+    background-image:repeating-linear-gradient(-45deg,
+        color-mix(in srgb, var(--ink) 5%, var(--surface2)) 0 6px,
+        var(--surface2) 6px 14px),
+      linear-gradient(100deg, transparent 35%, color-mix(in srgb, var(--ink) 10%, transparent) 50%, transparent 65%);
+    background-size:auto, 220% 100%;
+    background-position:0 0, 120% 0;
+    animation:skelSweep 1.5s ease-in-out infinite}
+  @keyframes skelSweep{to{background-position:0 0, -20% 0}}
 
   /* list rows */
   .card{background:var(--surface);border:1px solid var(--line);border-radius:12px;overflow:hidden}
@@ -302,6 +364,26 @@
   .phead .avatar{width:58px;height:58px;font-size:20px}
   .pname{font-family:var(--display);font-weight:800;font-size:20px}
   .phandle{color:var(--muted);font-size:13px}
+
+  /* profile header, laminated as a video-store membership card. Same
+     navy-card/gold-label vocabulary as .wrapcard/.wraplabel below (this is
+     the second "screenshot-shaped" surface in the profile, so it deliberately
+     matches rather than differentiates) plus a cheap diagonal "laminate sheen"
+     — one gradient layer, no extra markup — for the plastic-card read. */
+  .memcard{position:relative;overflow:hidden;background:var(--nav-bg);border-radius:16px;padding:16px 18px 14px;
+    box-shadow:var(--pop);border:1.5px solid var(--line);margin-bottom:16px;animation:riseIn .3s ease both}
+  .memcard::before{content:"";position:absolute;inset:0;pointer-events:none;
+    background:linear-gradient(115deg,rgba(255,255,255,.14) 0%,rgba(255,255,255,0) 22%,rgba(255,255,255,0) 68%,rgba(255,255,255,.08) 100%)}
+  .memcard-top{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:14px;position:relative}
+  .memcard-top .iconbtn{border-color:transparent;background:rgba(255,255,255,.08);color:var(--nav-ink)}
+  .memcard-top .pillbtn{background:transparent;border-color:var(--nav-ink);color:var(--nav-ink)}
+  .memcard-body{display:flex;align-items:center;gap:14px;margin-bottom:14px;position:relative}
+  .memcard-body .pname{color:var(--gold)}
+  .memcard-body .phandle{color:var(--nav-ink)}
+  .memcard-fields{display:flex;gap:22px;flex-wrap:wrap;padding-top:12px;border-top:1px dashed rgba(201,211,238,.3);position:relative}
+  .memfield{display:flex;flex-direction:column;gap:3px}
+  .memlbl{font-family:var(--mono);font-size:9.5px;letter-spacing:.14em;text-transform:uppercase;color:var(--nav-ink);opacity:.75}
+  .memval{font-family:var(--mono);font-weight:700;font-size:13px;letter-spacing:.03em;color:var(--gold);font-variant-numeric:tabular-nums}
   /* minmax(0,1fr), not bare 1fr — a bare 1fr track still has an implicit
      auto minimum, so a stat's content (the number + label) can force the
      grid wider than its container instead of the columns shrinking to fit,
@@ -367,6 +449,12 @@
   .sheet{width:100%;max-width:432px;background:var(--bg);border-radius:16px 16px 0 0;padding:20px 20px calc(22px + env(safe-area-inset-bottom));
     max-height:88dvh;overflow-y:auto;animation:up .22s ease;border-top:4px solid var(--gold)}
   @keyframes up{from{transform:translateY(28px);opacity:.6}to{transform:none;opacity:1}}
+  /* exit mirrors the entrance (up/fade played backwards) — closeSheet() in
+     app.js adds .closing and holds the DOM in place for this animation's
+     duration before actually tearing the sheet down, so a dismiss reads as
+     the box sliding back off the shelf instead of just vanishing */
+  .overlay.closing{animation:fade .18s ease reverse both}
+  .overlay.closing .sheet:not(.full){animation:up .18s ease reverse both}
   .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 16px}
   .sheet .h1{font-size:20px}
 
@@ -379,6 +467,24 @@
   .fullprofile{min-height:100dvh;padding:20px 20px calc(20px + env(safe-area-inset-bottom));
     background-color:var(--bg);background-size:cover;background-position:center top}
   .fullhead{display:flex;justify-content:flex-end;margin-bottom:12px}
+
+  /* milestone celebrations: first ranking / 50th / one-year anniversary.
+     Same .fullprofile shell as the full profile and yearly wrap-up, plus a
+     confetti burst confined to the top of the screen and a scoreIn-style pop
+     on the headline — the one place besides the result sheet that earns a
+     bigger entrance than riseIn's quiet fade. */
+  .milestone{position:relative;overflow:hidden}
+  .milestone .h1{animation:scoreIn .4s cubic-bezier(.2,1.6,.4,1) both}
+  .milestone .sub{color:var(--muted);font-size:13.5px;line-height:1.5;margin:8px 0 0}
+  .milestone .stats{margin-top:18px}
+  .confetti{position:absolute;left:0;right:0;top:0;height:200px;overflow:hidden;pointer-events:none}
+  .confetti-piece{position:absolute;top:-16px;width:7px;height:13px;border-radius:2px;opacity:.9;
+    animation-name:confettiFall;animation-timing-function:ease-in;animation-fill-mode:forwards}
+  @keyframes confettiFall{from{transform:translateY(0) rotate(0deg);opacity:.95}to{transform:translateY(360px) rotate(300deg);opacity:0}}
+  @media (prefers-reduced-motion:reduce){
+    .confetti-piece{animation:none;opacity:0}
+    .milestone .h1{animation:none}
+  }
 
   /* rate flow */
   .buckets{display:grid;gap:10px;margin-top:14px}
@@ -414,10 +520,18 @@
   .dhead h2{font-family:var(--display);font-size:21px;margin:0 0 4px;line-height:1.2;text-wrap:balance}
   .dhead .d{color:var(--muted);font-size:13px;line-height:1.5}
   .dactions{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px}
+  /* a changed number gets a brief gold flash-and-settle instead of just
+     silently being different — the rewatch counter (logged another watch)
+     wraps its digit in this on every re-render, and since the detail sheet
+     is rebuilt via innerHTML each time, the freshly-inserted span replays it
+     for free */
+  .pulse{display:inline-block;animation:pulseHi .5s cubic-bezier(.2,1.6,.4,1) both}
+  @keyframes pulseHi{0%{transform:scale(1.7);color:var(--gold)}100%{transform:scale(1);color:inherit}}
 
-  .toast{position:fixed;left:50%;transform:translateX(-50%);bottom:104px;z-index:60;background:var(--nav-bg);color:var(--gold);
-    padding:10px 18px;border-radius:999px;font-size:13px;font-weight:700;box-shadow:var(--shadow);opacity:0;pointer-events:none;transition:opacity .2s ease}
-  .toast.on{opacity:1}
+  .toast{position:fixed;left:50%;transform:translateX(-50%) translateY(8px);bottom:104px;z-index:60;background:var(--nav-bg);color:var(--gold);
+    padding:10px 18px;border-radius:999px;font-size:13px;font-weight:700;box-shadow:var(--shadow);opacity:0;pointer-events:none;
+    transition:opacity .2s ease,transform .2s ease}
+  .toast.on{opacity:1;transform:translateX(-50%) translateY(0)}
 
   /* auth / onboarding */
   .auth{position:absolute;inset:0;z-index:40;background:var(--bg);overflow-y:auto;display:none;padding:38px 26px 40px}

@@ -115,13 +115,18 @@ function seed(){
     feedSeen:"",
     notifSeen:"",
     lbQueue:[],
-    ui:{accent:null, wall:null, wallTitle:null},
+    ui:{accent:null, wall:null, wallTitle:null, sound:true},
     // id -> ISO timestamp of the last time that movie was (re)ranked. Stamped
     // by placeAt() going forward and backfilled from Supabase's
     // rankings.updated_at/created_at by pullRankings() for signed-in users —
     // see the comment above profileHeatmapHTML() for why this is the only
     // honest source of per-ranking dates the app has.
     rankTimes:{},
+    // "already celebrated, never show again" markers for the full-screen
+    // milestone moments (see openMilestoneSheet()) — same one-shot idea as
+    // feedSeen/notifSeen above, just three flags instead of a timestamp
+    // watermark since each of these fires at most once, ever, ever again.
+    milestonesShown:{first:false, fifty:false, anniversary1:false},
   };
 }
 function load(){
@@ -138,8 +143,10 @@ function load(){
         if(!s.dislikes) s.dislikes = {};
         if(!s.rewatches) s.rewatches = {};
         if(!s.rankTimes) s.rankTimes = {};
+        if(!s.milestonesShown) s.milestonesShown = {first:false, fifty:false, anniversary1:false};
         if(!("feedSeen" in s)) s.feedSeen = "";
-        if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null};
+        if(!s.ui) s.ui = {accent:null, wall:null, wallTitle:null, sound:true};
+        if(s.ui.sound === undefined) s.ui.sound = true; // existing saved state predates this field
         if(!("notifSeen" in s)) s.notifSeen = "";
         if(!Array.isArray(s.lbQueue)) s.lbQueue = [];
         // one-time cleanup: earlier demo builds pre-seeded rankings; if they're
@@ -306,6 +313,104 @@ const $ = sel => document.querySelector(sel);
 /* one place to surface swallowed failures: never changes control flow, just
    makes network/storage problems visible in the console instead of vanishing */
 function logErr(ctx, e){ try{ console.warn("[reeli] " + ctx + " failed:", e); }catch(_){} }
+/* ---------- sound design + haptics ----------
+   Short, in-universe SFX (plastic click / bucket thunk / tape-rewind squeal)
+   synthesized on the fly with Web Audio — no asset pipeline, no network
+   request, no binary files in the repo. Every sound is a few oscillators
+   plus a short gain envelope (attack/decay well under 150ms), kept quiet
+   (peak gain 0.05-0.15) so it reads as UI feedback, not music.
+
+   One toggle (S.ui.sound) gates both channels — sound *and* haptics — rather
+   than two separate settings. They fire at the exact same moments for the
+   exact same reason (physical confirmation of an action), so a user who
+   wants quiet clearly wants both off, and a single obvious switch beats two
+   near-duplicate ones in a settings list already full of little pickers.
+
+   AudioContext needs a user gesture before it's allowed to produce sound in
+   most browsers, so it's created lazily on first use from inside a click
+   handler (never at module load / render time) and reused after that. */
+let SFX_CTX = null;
+function sfxCtx(){
+  if(SFX_CTX) return SFX_CTX;
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if(!AC) return null;
+  SFX_CTX = new AC();
+  return SFX_CTX;
+}
+/* short burst of white noise through a gain envelope — the "texture" half of
+   the click/thunk sounds, giving them a mechanical rattle instead of a pure
+   game-y tone */
+function sfxNoiseBurst(ctx, dest, dur, peak){
+  const n = Math.max(1, Math.round(ctx.sampleRate * dur));
+  const buf = ctx.createBuffer(1, n, ctx.sampleRate);
+  const data = buf.getChannelData(0);
+  for(let i = 0; i < n; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / n);
+  const src = ctx.createBufferSource();
+  src.buffer = buf;
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(peak, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  src.connect(g); g.connect(dest);
+  src.start();
+}
+function sfxTone(ctx, dest, {freq, type = "sine", dur, peak, freqEnd}){
+  const osc = ctx.createOscillator();
+  osc.type = type;
+  osc.frequency.setValueAtTime(freq, ctx.currentTime);
+  if(freqEnd) osc.frequency.exponentialRampToValueAtTime(freqEnd, ctx.currentTime + dur);
+  const g = ctx.createGain();
+  g.gain.setValueAtTime(0.0001, ctx.currentTime);
+  g.gain.exponentialRampToValueAtTime(peak, ctx.currentTime + 0.008);
+  g.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + dur);
+  osc.connect(g); g.connect(dest);
+  osc.start(); osc.stop(ctx.currentTime + dur + 0.02);
+}
+/* a soft plastic "click" — the sound of a remote/controller button, for a
+   head-to-head pick */
+function sfxClick(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 1400, type: "square", dur: 0.035, peak: 0.06});
+  sfxNoiseBurst(ctx, ctx.destination, 0.02, 0.04);
+}
+/* a satisfying "thunk" — a tape being slotted home, for a ranking placement */
+function sfxThunk(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 180, freqEnd: 90, type: "triangle", dur: 0.11, peak: 0.13});
+  sfxNoiseBurst(ctx, ctx.destination, 0.05, 0.05);
+}
+/* a brief reverse-whir — tape rewinding, for undoing a placement */
+function sfxRewind(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 260, freqEnd: 900, type: "sawtooth", dur: 0.14, peak: 0.05});
+}
+/* a soft whoosh — tape shuttling past the head, for a nav tab switch */
+function sfxWhoosh(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxNoiseBurst(ctx, ctx.destination, 0.09, 0.045);
+}
+/* a restrained, lo-fi positive chime — not built or called by anything yet
+   (no milestone feature exists in this codebase at the time this shipped),
+   but left here as a ready hook: a milestone feature landing later can call
+   playSfx("milestone") without touching this file's sound plumbing. */
+function sfxMilestone(){
+  const ctx = sfxCtx(); if(!ctx) return;
+  sfxTone(ctx, ctx.destination, {freq: 523, type: "sine", dur: 0.12, peak: 0.07});
+  sfxTone(ctx, ctx.destination, {freq: 659, type: "sine", dur: 0.14, peak: 0.06});
+}
+const SFX = {click: sfxClick, thunk: sfxThunk, rewind: sfxRewind, whoosh: sfxWhoosh, milestone: sfxMilestone};
+/* the one entry point every call site uses — checks the mute toggle, never
+   throws (some browsers/embedded webviews throw on audio API use outside a
+   user gesture), and never blocks the action it's attached to */
+function playSfx(name){
+  if(!S.ui.sound) return;
+  try{ const fn = SFX[name]; if(fn) fn(); }catch(e){ logErr("playing sfx:" + name, e); }
+}
+/* same gate, same fire-and-forget contract, for the vibration motor */
+function playHaptic(ms){
+  if(!S.ui.sound) return;
+  try{ if(navigator.vibrate) navigator.vibrate(ms); }catch(e){ logErr("vibrating", e); }
+}
+
 /* stable pseudo-random hue from a title, for gradient poster cards.
    Shared by cineToMovie (catalog rows) and rowToMovie (cloud rows) so the same
    movie gets the same colour no matter which path it arrived through. */
@@ -641,11 +746,40 @@ function clearSyncPending(){
 
 /* ---------- navigation ---------- */
 const TAGS = {feed:"Feed", ranks:"Your ranking", search:"Rank anything", watch:"Watchlist", profile:"Profile"};
+/* left-to-right order of the bottom-nav buttons, read from the DOM rather than
+   hard-coded, so the slide direction below always matches what's on screen */
+const NAV_ORDER = Array.from(document.querySelectorAll(".nav [data-nav]")).map(b => b.dataset.nav);
+const REDUCE_MOTION = typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 let cur = "feed";
+let navSlideTimer = null;
 function nav(to){
+  const from = cur;
+  const switching = to !== from && NAV_ORDER.includes(from);
+  if(switching) playSfx("whoosh");
   cur = to;
-  document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
-  $("#scr-"+to).classList.add("on");
+  const toEl = $("#scr-"+to);
+
+  // a tap mid-transition shouldn't leave the previous outgoing screen stuck
+  // half-slid — finish whatever was in flight before starting a new one
+  if(navSlideTimer){ clearTimeout(navSlideTimer); navSlideTimer = null; }
+  document.querySelectorAll(".screen").forEach(s =>
+    s.classList.remove("slide-out-l", "slide-out-r", "slide-in-l", "slide-in-r"));
+
+  if(switching && !REDUCE_MOTION){
+    // "which aisle is further right" — slide toward the tab you tapped
+    const fromEl = $("#scr-"+from);
+    const forward = NAV_ORDER.indexOf(to) > NAV_ORDER.indexOf(from);
+    fromEl.classList.add(forward ? "slide-out-l" : "slide-out-r");
+    toEl.classList.add("on", forward ? "slide-in-r" : "slide-in-l");
+    navSlideTimer = setTimeout(() => {
+      fromEl.classList.remove("on", "slide-out-l", "slide-out-r");
+      toEl.classList.remove("slide-in-l", "slide-in-r");
+      navSlideTimer = null;
+    }, 200);
+  } else {
+    document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+    toEl.classList.add("on");
+  }
   /* `.cur` is the visual state; aria-current is the one a screen reader reads,
      and without it the nav announces five identical-sounding buttons */
   document.querySelectorAll(".nav [data-nav]").forEach(b => {
@@ -656,6 +790,9 @@ function nav(to){
   $("#screenTag").textContent = TAGS[to];
   render(to);
   if(to === "feed" && authed()){ markFeedSeen(); refreshCloudFeed(); refreshNotifs(); }
+  // date-based, not action-based (see checkAnniversaryMilestone()'s comment):
+  // checked every time the profile tab is opened, a no-op once already shown
+  if(to === "profile") checkAnniversaryMilestone();
   window.scrollTo({top:0});
   // the screen swap is a DOM replacement, not a page load, so announce it
   announce(TAGS[to]);
@@ -1470,7 +1607,7 @@ async function openPerson(id){
       <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>them</span></div></div>` : ""}
     ${rows.length ? TYPES.map(t => byType[t].length ? `
       <div class="sechead">Their top ${TYPE_LABEL[t].toLowerCase()}</div>
-      <div class="card">${byType[t].slice(0, 10).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+      <div class="card">${byType[t].slice(0, 10).map((r, i) => `<button class="row shelf" style="--i:${i}" data-open="${esc(r.movie_id)}">
         <span class="rankno">${i+1}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
         <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
         ${scoreHTML(Number(r.score))}</button>`).join("")}</div>` : "").join("")
@@ -1515,7 +1652,7 @@ function personPodiumHTML(byType){
     const rows = byType[t];
     if(!rows.length) return "";
     return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
-        rows.slice(0, 3).map((r, i) => `<button class="row" data-open="${esc(r.movie_id)}">
+        rows.slice(0, 3).map((r, i) => `<button class="row shelf" style="--i:${i}" data-open="${esc(r.movie_id)}">
           <span class="rankno">${medals[i]}</span>${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-sm")}
           <span class="meta"><span class="t">${esc(r.title)}</span><span class="d">${esc([r.year, r.genre].filter(Boolean).join(" · "))}</span></span>
           ${scoreHTML(Number(r.score))}</button>`).join("")}</div>`;
@@ -1670,7 +1807,7 @@ function renderWatchPartySheet(loading){
         <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span></span>
         <button class="pillbtn acc" data-wpadd="${esc(m.id)}">Add</button>
       </div>`).join("")}</div>`
-      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — bookmark something first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+      : `<div class="empty" style="padding:18px 24px"><p>Nothing left in your watchlist to add — queue something up first.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
   openSheet(`
     <h1 class="h1">Watch party</h1>
     <p class="sub">You and ${esc(otherName)}'s shared watchlist — anything either of you queues up here, you both see.</p>
@@ -2113,9 +2250,9 @@ function renderRanks(){
       if(rankGenre){ const m = getMovie(id); if(!m || m.genre !== rankGenre) return false; }
       return true;
     });
-    const rows = shown.map(id => {
+    const rows = shown.map((id, i) => {
       const m = getMovie(id); if(!m) return "";
-      return `<button class="row" data-open="${id}">
+      return `<button class="row shelf" style="--i:${i}" data-open="${id}">
         <span class="rankno">${rankOf(id)}</span>
         ${posterHTML(m,"p-sm")}
         <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
@@ -2167,9 +2304,12 @@ function lovedMovieAnchor(){
 function similarityTo(anchor, m){
   return (anchor.genre && m.genre === anchor.genre ? 2 : 0) + (anchor.dir && m.dir === anchor.dir ? 3 : 0);
 }
-function movieRowHTML(m){
+function movieRowHTML(m, i){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
-  return `<div class="row">
+  // i (this row's index within whatever list it's part of) drives the
+  // "stocked onto the shelf" stagger — see .shelf/shelfIn in styles.css.
+  // Callers that don't care about staggering (none currently) can omit it.
+  return `<div class="row shelf" style="--i:${i|0}">
     ${posterHTML(m,"p-sm")}
     <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
       <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
@@ -2179,6 +2319,20 @@ function movieRowHTML(m){
           <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="${inWatch?"currentColor":"none"}" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M6 3h12v18l-6-4.5L6 21z"/></svg></button>
         <button class="pillbtn acc" data-rate="${m.id}">Rank</button>`}
   </div>`;
+}
+/* placeholder rows shown while trending/live-search results are still on the
+   wire — same geometry as movieRowHTML's poster+title+subtitle so real rows
+   swap in with no layout shift, textured with the CSS-only "tuning in" sweep
+   defined on .skel-poster/.skel-line in styles.css */
+function skeletonRows(n){
+  let out = "";
+  for(let i = 0; i < n; i++){
+    out += `<div class="skel-row" aria-hidden="true">
+      <div class="skel-poster"></div>
+      <div class="skel-meta"><div class="skel-line"></div><div class="skel-line sm"></div></div>
+    </div>`;
+  }
+  return out;
 }
 function switchSearchType(t){
   if(t === searchType || !TYPES.includes(t)) return;
@@ -2243,9 +2397,10 @@ function renderSearch(){
     const list = q
       ? pool.filter(m => (m.title+" "+m.dir+" "+m.genre+" "+m.year).toLowerCase().includes(q))
       : pool.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 12);
-    const rows = list.map(movieRowHTML).join("");
+    const rows = list.map((m,i) => movieRowHTML(m,i)).join("");
     const trend = TRENDING.movie;
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("") : "";
+    const trendSkel = (!q && trend === "loading") ? `<div class="sechead">Popular movies</div><div class="card">${skeletonRows(4)}</div>` : "";
     // "Because you loved X" — anchored on one specific loved movie, not the
     // abstract taste vector. Same pool the "Picked for your taste" list above
     // already built; just re-scored against the anchor and excluded from it.
@@ -2254,10 +2409,10 @@ function renderSearch(){
     const anchorRows = anchor
       ? pool.filter(m => !isRanked(m.id) && m.id !== anchor.id)
           .sort((a,b) => similarityTo(anchor,b) - similarityTo(anchor,a) || tasteScore(b) - tasteScore(a))
-          .slice(0, 6).map(movieRowHTML).join("")
+          .slice(0, 6).map((m,i) => movieRowHTML(m,i)).join("")
       : "";
     body = `
-      ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : ""}
+      ${trendRows ? `<div class="sechead">Popular movies</div><div class="card">${trendRows}</div>` : trendSkel}
       ${anchorRows ? `<div class="sechead">Because you loved ${esc(anchor.title)}</div><div class="card">${anchorRows}</div>` : ""}
       ${!q ? `<div class="sechead">${S.taste ? "Picked for your taste" : "Suggestions for you"}</div>` : rows ? `<div class="sechead">From your library</div>` : ""}
       ${(!q || rows) ? `<div class="card">${rows}</div>` : ""}`;
@@ -2281,10 +2436,10 @@ function renderSearch(){
       ${["all", ...formats].map(f =>
         `<button class="seg sm ${animeFormat===f?"cur":""}" data-afmt="${esc(f)}">${f === "all" ? "All" : esc(ANI_FORMAT_LABEL[f] || f)}</button>`).join("")}
     </div>` : "";
-    const customRows = customList.filter(matchesFormat).map(movieRowHTML).join("");
-    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map(movieRowHTML).join("") : "";
+    const customRows = customList.filter(matchesFormat).map((m,i) => movieRowHTML(m,i)).join("");
+    const trendRows = (!q && Array.isArray(trend)) ? trend.filter(m => !isRanked(m.id) && matchesFormat(m)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("") : "";
     const trendEmpty = !q && !trendRows
-      ? trend === "loading" ? `<div class="empty" style="padding:22px"><p>Loading trending ${label}…</p></div>`
+      ? trend === "loading" ? `<div class="sechead">Trending ${label}</div><div class="card">${skeletonRows(4)}</div>`
         : trend === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
         : ""
       : "";
@@ -2293,7 +2448,7 @@ function renderSearch(){
     // trending order. The pool is capped at ~10-14 items, so some overlap
     // with the Trending section above is an acceptable simplification.
     const recRows = (!q && Array.isArray(trend))
-      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map(movieRowHTML).join("")
+      ? trend.filter(m => !isRanked(m.id)).sort((a,b) => tasteScore(b) - tasteScore(a)).slice(0, 10).map((m,i) => movieRowHTML(m,i)).join("")
       : "";
     body = `
       ${formatFilterHTML}
@@ -2304,9 +2459,9 @@ function renderSearch(){
   }
   let liveHTML = "";
   if(q){
-    const liveRows = liveResults.map(movieRowHTML).join("");
+    const liveRows = liveResults.map((m,i) => movieRowHTML(m,i)).join("");
     liveHTML = `<div class="sechead">Worldwide catalog</div><div class="card">${
-      liveState === "loading" ? `<div class="empty" style="padding:22px"><p>Searching the worldwide catalog…</p></div>`
+      liveState === "loading" ? skeletonRows(4)
       : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
       : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
   }
@@ -2342,7 +2497,7 @@ function onSearchInput(inp){
 /* ---------- watchlist ---------- */
 function renderWatch(){
   const items = S.watch.map(getMovie).filter(Boolean);
-  const rows = items.map(m => `<div class="row">
+  const rows = items.map((m, i) => `<div class="row shelf" style="--i:${i}">
       ${posterHTML(m,"p-sm")}
       <button class="meta" data-open="${m.id}" style="text-align:left;min-width:0">
         <span class="t">${esc(m.title)}</span><span class="d">${esc(mline(m))}</span>
@@ -2356,7 +2511,7 @@ function renderWatch(){
     <p class="sub">Queued up for future you. Rank them once you've watched.</p>
     ${items.length >= 2 ? `<div style="margin-bottom:14px"><button class="pillbtn acc" id="pickBtn">🎲 Pick tonight's movie for me</button></div>` : ""}
     ${items.length ? `<div class="card">${rows}</div>`
-      : `<div class="empty"><div class="big" aria-hidden="true">🍿</div><p>Your watchlist is empty. Browse and bookmark anything you want to see.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
+      : `<div class="empty"><div class="big" aria-hidden="true">🍿</div><p>Your watchlist is empty. Browse and queue up anything you want to see.</p><button class="pillbtn acc" data-gosearch>Find movies</button></div>`}`;
 }
 /* taste-weighted random pick from the watchlist */
 function pickTonight(prevId){
@@ -2418,13 +2573,76 @@ function profileIdentityLine(d){
   if(d.needsSetup) return "signed in — pick a handle";
   return esc(d.P.handle) + " · guest mode";
 }
+/* stable pseudo-random "card number" from a handle — same rolling-hash idea
+   as hueFromTitle above (multiply-and-mod a running total over the string's
+   char codes), just widened from a 0-360 hue range to an 8-digit card number
+   and grouped like a real membership card instead of fed into hsl(). Guests
+   land on "@guest" like everyone else pre-setup, so they still get a (stable,
+   shared) number rather than a blank field. */
+function memberCardNumber(handle){
+  let hash = 0;
+  const s = String(handle || "@guest");
+  for(const ch of s) hash = (hash*31 + ch.charCodeAt(0)) % 100000000;
+  const digits = String(hash).padStart(8,"0");
+  return digits.slice(0,4) + " " + digits.slice(4);
+}
+/* "MEMBER SINCE" reads off profiles.created_at (pulled via pullProfile()'s
+   select:"*"), month + year only — a card wouldn't print the exact minute you
+   signed up either, and it sidesteps timezone-of-day edge cases in a field
+   that's meant to be glanceable, not precise. Returns null (never a fabricated
+   date) for guests and for any cloud profile whose row predates this field. */
+function memberSinceLabel(d){
+  if(!d.cloud || !CLOUD.profile.created_at) return null;
+  const dt = new Date(CLOUD.profile.created_at);
+  if(isNaN(dt)) return null;
+  return dt.toLocaleDateString(undefined, {month:"long", year:"numeric", timeZone:"UTC"});
+}
+/* the profile header, reimagined as a laminated video-store membership card.
+   Still handles needsSetup the same way the old plain header did — a stub
+   name/avatar row with no card fields, since there's nothing stable to print
+   on a card yet (no handle, no server-assigned created_at). Edit lives once,
+   on the card itself, so profileBannerHTML's "finish setup" nudge never has
+   to duplicate it. */
 function profileHeadHTML(d){
-  return `<div class="phead">
-      ${avatarHTML(d.needsSetup ? "?" : d.P.name, d.P.hue, d.P.avatarUrl)}
-      <div style="flex:1;min-width:0"><div class="pname">${d.needsSetup ? "Finish setup" : esc(d.P.name)}</div>
+  if(d.needsSetup) return `<div class="phead">
+      ${avatarHTML("?", d.P.hue, null)}
+      <div style="flex:1;min-width:0"><div class="pname">Finish setup</div>
         <div class="phandle">${profileIdentityLine(d)}</div></div>
-      ${d.needsSetup ? "" : `<button class="pillbtn" id="editBtn">Edit</button>`}
     </div>`;
+  const since = memberSinceLabel(d);
+  return `<div class="memcard">
+      <div class="memcard-top">
+        <span class="wraplabel">REELI VIDEO CLUB</span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <button class="iconbtn" id="memShareBtn" aria-label="Share my membership card">⇪</button>
+          <button class="pillbtn" id="editBtn">Edit</button>
+        </div>
+      </div>
+      <div class="memcard-body">
+        ${avatarHTML(d.P.name, d.P.hue, d.P.avatarUrl, "width:52px;height:52px;font-size:18px")}
+        <div style="flex:1;min-width:0">
+          <div class="pname">${esc(d.P.name)}</div>
+          <div class="phandle">${profileIdentityLine(d)}</div>
+        </div>
+      </div>
+      <div class="memcard-fields">
+        <div class="memfield"><span class="memlbl">Member No.</span><span class="memval">${memberCardNumber(d.P.handle)}</span></div>
+        ${since ? `<div class="memfield"><span class="memlbl">Member Since</span><span class="memval">${esc(since)}</span></div>` : ""}
+      </div>
+    </div>`;
+}
+/* mirrors shareTopFive()/shareYearlyWrap()'s URL logic exactly — a cloud
+   profile shares a permalink, a guest/local-only user shares the marketing
+   homepage. Recomputes profileData() itself, same as shareYearlyWrap() does
+   for wrapYearStats(), so CLICK_IDS can call it with no arguments. */
+function shareMembershipCard(){
+  const d = profileData();
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  const since = memberSinceLabel(d);
+  const bits = [`Card #${memberCardNumber(d.P.handle)}`];
+  if(since) bits.unshift(`Member since ${since}`);
+  openShare(`My Reeli Video Club membership card 🎬📼\n${bits.join(" · ")}\nWhat's yours?`, url);
 }
 /* the call-to-action card above the stats. Signed in with a profile: nothing to
    nag about. Signed in without one: sync is silently off, say so. Guest: offer
@@ -2473,6 +2691,10 @@ function profileCustomizeHTML(){
       <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
         <span class="d" style="color:var(--muted);font-size:12px;width:72px;flex:none">Wallpaper</span>
         <button class="pillbtn" id="wallBtn" aria-label="${S.ui.wallTitle ? "Change wallpaper, currently " + esc(S.ui.wallTitle) : "Pick a movie scene as wallpaper"}">${S.ui.wallTitle ? "🎞 " + esc(S.ui.wallTitle) : "Pick a movie scene"}</button>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+        <span class="d" style="color:var(--muted);font-size:12px;width:72px;flex:none">Feedback</span>
+        <button class="iconbtn ${S.ui.sound ? "on" : ""}" id="soundBtn" aria-pressed="${!!S.ui.sound}" aria-label="${S.ui.sound ? "Mute sound and vibration" : "Unmute sound and vibration"}" title="${S.ui.sound ? "Sound + haptics on" : "Sound + haptics off"}">${S.ui.sound ? "🔊" : "🔇"}</button>
       </div>
     </div>`;
 }
@@ -2773,10 +2995,10 @@ function yearlyWrapHTML(){
 
   const typeChips = TYPES.filter(t => w.byType[t].length)
     .map(t => `<span class="chip">${esc(TYPE_LABEL[t])} · ${w.byType[t].length}</span>`).join("");
-  const podium = TYPES.filter(t => w.top[t]).map(t => {
+  const podium = TYPES.filter(t => w.top[t]).map((t, i) => {
     const id = w.top[t], m = getMovie(id);
     return `<div class="sechead">${esc(TYPE_LABEL[t])} of the year</div><div class="card">
-        <button class="row" data-open="${id}">
+        <button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">🏆</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button></div>`;
@@ -2819,6 +3041,144 @@ function shareYearlyWrap(){
   if(w.topGenre) bits.push(`Favorite genre: ${w.topGenre[0]}`);
   openShare(`My ${year} on Reeli 🎬\n${bits.join(" · ")}\nWhat's your wrap-up?`, url);
 }
+
+/* ---------- milestone celebrations: first ranking, 50th, one year on Reeli ----------
+   Three genuine "pause and notice this" moments, deliberately full-screen
+   (openSheet + sheet.classList.add("full"), the same mechanism openFullProfile()
+   and openYearlyWrap() use) rather than another toast — this app already has a
+   toast for "ranking undone"/"link copied", and a milestone is meant to read as
+   a bigger deal than that. See S.milestonesShown for the one-shot persistence
+   and placeAt()/maybeShowMilestone() for how the first two get triggered
+   without racing the score-reveal sheet; checkAnniversaryMilestone() below is
+   the date-based third one, fired from nav() on the way into the profile tab. */
+
+/* "when did this person start" — CLOUD.profile.created_at (the account row's
+   own created_at, pulled by pullProfile()'s `select:"*"`) is the cleanest
+   signal where it exists: it's set once, at signup, and never touched again.
+   A guest or a signed-in user PostgREST hasn't returned a profile for yet has
+   no such row, so fall back to the earliest S.rankTimes entry — the same
+   "first-ever ranking" proxy the activity heat map already treats as the
+   honest source of per-ranking dates (see the comment above
+   profileHeatmapHTML()). Either way the result is a real Date or null. */
+function anniversaryReferenceDate(){
+  if(CLOUD.profile && CLOUD.profile.created_at){
+    const d = new Date(CLOUD.profile.created_at);
+    if(!isNaN(d)) return d;
+  }
+  const times = S.rankTimes || {};
+  let earliest = null;
+  for(const id in times){
+    const t = times[id]; if(!t) continue;
+    const d = new Date(t);
+    if(isNaN(d)) continue;
+    if(!earliest || d < earliest) earliest = d;
+  }
+  return earliest;
+}
+/* date-based, not action-based, so this doesn't hook placeAt() at all — it's
+   checked whenever the profile tab is opened (see nav()) and is a no-op
+   instantly once S.milestonesShown.anniversary1 flips, so visiting profile
+   100 times a day never re-shows it. */
+function checkAnniversaryMilestone(){
+  if(S.milestonesShown.anniversary1) return;
+  const ref = anniversaryReferenceDate();
+  if(!ref) return;
+  const anniversary = new Date(ref);
+  anniversary.setUTCFullYear(anniversary.getUTCFullYear() + 1);
+  if(new Date() < anniversary) return;
+  S.milestonesShown.anniversary1 = true;
+  save();
+  openMilestoneSheet("anniversary1", ref);
+}
+/* a handful of small falling/rotating rects, CSS-only, staggered by
+   animation-delay — cheap enough to be tasteful rather than gimmicky, and
+   confined to the top of the screen so it never fights the copy underneath */
+function confettiHTML(){
+  const colors = ["var(--gold)", "var(--good)", "var(--accent)", "var(--mid)", "var(--bad)"];
+  let out = "";
+  for(let i = 0; i < 14; i++){
+    const left = (i * 7.1 + 3) % 100;
+    const delay = (i % 7) * 0.11;
+    const dur = 1.9 + (i % 5) * 0.3;
+    out += `<span class="confetti-piece" style="left:${left.toFixed(1)}%;background:${colors[i % colors.length]};animation-delay:${delay.toFixed(2)}s;animation-duration:${dur.toFixed(2)}s"></span>`;
+  }
+  return `<div class="confetti" aria-hidden="true">${out}</div>`;
+}
+let MILESTONE_ACTIVE = null; // which one the open sheet is showing — read by shareMilestone()
+function openMilestoneSheet(which, refDate){
+  MILESTONE_ACTIVE = which;
+  openSheet(milestoneHTML(which, refDate));
+  sheet.classList.add("full");
+  hydratePosters(sheet);
+}
+function closeMilestone(){ MILESTONE_ACTIVE = null; closeSheet(); }
+function milestoneHTML(which, refDate){
+  const close = `<div class="fullhead"><button class="pillbtn soft" id="milestoneClose" aria-label="Close celebration">✕ Close</button></div>`;
+  if(which === "first"){
+    const m = PLACED_ID && getMovie(PLACED_ID);
+    const sc = PLACED_ID ? scoreOf(PLACED_ID) : null;
+    return `<div class="fullprofile milestone">${close}${confettiHTML()}
+      <span class="wraplabel">REWIND • FIRST TAPE</span>
+      <h1 class="h1" style="margin-top:14px">Your first tape's been shelved.</h1>
+      <p class="sub">One ranked. Every list starts with one — this is where yours begins.</p>
+      ${m ? `<div class="result" style="margin-top:6px">${posterHTML(m,"p-lg")}<h2>${esc(m.title)}</h2>${sc != null ? scoreHTML(sc,"bigscore") : ""}</div>` : ""}
+      ${milestoneActionsHTML()}
+    </div>`;
+  }
+  if(which === "fifty"){
+    const d = profileData();
+    return `<div class="fullprofile milestone">${close}${confettiHTML()}
+      <span class="wraplabel">REWIND • 50 RANKED</span>
+      <h1 class="h1" style="margin-top:14px">Fifty and counting.</h1>
+      <p class="sub">You've ranked fifty titles. That's a real list now, not a start.</p>
+      <div class="stats">
+        <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
+        <div class="stat"><div class="n">${d.avg}</div><div class="l">Avg score</div></div>
+        <div class="stat"><div class="n" style="font-size:14px">${d.topGenres.length ? esc(d.topGenres[0][0]) : "—"}</div><div class="l">Top genre</div></div>
+      </div>
+      ${milestoneActionsHTML()}
+    </div>`;
+  }
+  // anniversary1
+  const d = profileData();
+  const since = refDate ? refDate.toLocaleDateString(undefined, {month:"long", year:"numeric"}) : null;
+  return `<div class="fullprofile milestone">${close}${confettiHTML()}
+    <span class="wraplabel">MEMBER SINCE • YEAR ONE</span>
+    <h1 class="h1" style="margin-top:14px">One year on Reeli.</h1>
+    <p class="sub">${since ? `Since ${esc(since)}. ` : ""}A whole year of arguing with yourself about what's actually good.</p>
+    <div class="stats">
+      <div class="stat"><div class="n">${d.ids.length}</div><div class="l">Ranked</div></div>
+      <div class="stat"><div class="n">${S.loved.length}</div><div class="l">Loved</div></div>
+      <div class="stat"><div class="n">${d.avg}</div><div class="l">Avg score</div></div>
+    </div>
+    ${milestoneActionsHTML()}
+  </div>`;
+}
+function milestoneActionsHTML(){
+  return `<div style="display:flex;gap:9px;margin-top:22px;flex-wrap:wrap">
+      <button class="pillbtn acc" id="milestoneShare" style="flex:1;padding:12px">Share</button>
+      <button class="pillbtn" id="milestoneDone" style="flex:1;padding:12px">Keep going</button>
+    </div>`;
+}
+function milestoneShareCopy(which){
+  const cloud = authed() && CLOUD.profile;
+  const url = cloud ? location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle) : "https://reeli.org/";
+  if(which === "first"){
+    const m = PLACED_ID && getMovie(PLACED_ID);
+    return {text: `Just ranked my first title on Reeli 🎬${m ? `\nFirst up: ${m.title}` : ""}\nStarting my list — what's yours?`, url};
+  }
+  if(which === "fifty"){
+    const d = profileData();
+    return {text: `50 titles ranked on Reeli 🎬\nAvg score: ${d.avg}${d.topGenres.length ? " · Favorite genre: " + d.topGenres[0][0] : ""}`, url};
+  }
+  return {text: `One year on Reeli 🎬\n${S.loved.length + S.fine.length + S.disliked.length} titles ranked and counting.`, url};
+}
+function shareMilestone(){
+  if(!MILESTONE_ACTIVE) return;
+  const {text, url} = milestoneShareCopy(MILESTONE_ACTIVE);
+  openShare(text, url);
+}
+
 /* one podium per media type — a movie's #1 never crowds out a show's or an
    anime's, same split as everywhere else in the app */
 function profilePodiumHTML(){
@@ -2827,7 +3187,7 @@ function profilePodiumHTML(){
     const ids = allRanked(t);
     if(!ids.length) return "";
     return `<div class="sechead">${esc(TYPE_LABEL[t])} podium</div><div class="card">${
-        ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+        ids.slice(0,3).map((id,i) => { const m = getMovie(id); return `<button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">${medals[i]}</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
@@ -2886,7 +3246,7 @@ function profileFranchisesHTML(){
   groups.sort((a,b) => b.ids.length - a.ids.length);
   return groups.slice(0,4).map(g => {
     return `<div class="sechead">${esc(g.label)}</div><div class="card">${
-        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row" data-open="${id}">
+        g.ids.slice(0,5).map((id,i) => { const m = getMovie(id); return `<button class="row shelf" style="--i:${i}" data-open="${id}">
           <span class="rankno">${i+1}</span>${posterHTML(m,"p-sm")}
           <span class="meta"><span class="t">${esc(m.title)}</span><span class="d">${esc([m.year, m.genre].filter(x => x && x !== "—").join(" · "))}</span></span>
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
@@ -3359,11 +3719,13 @@ const CLICK_ROUTES = [
 const CLICK_IDS = {
   // profile
   editBtn:        () => openAccountForm(),
+  memShareBtn:    () => shareMembershipCard(),
   finishSetupBtn: () => openClaimHandle(),
   logoutBtn:      () => doLogout(),
   logoutBtn2:     () => doLogout(),
   tasteBtn:       () => { O = null; openOnboarding(1); },
   wallBtn:        () => openWallPicker(),
+  soundBtn:       () => { S.ui.sound = !S.ui.sound; save(); renderProfile(); if(S.ui.sound) playSfx("click"); },
   tasteTwinsBtn:  () => fetchTasteTwins(),
   signupBtn:      () => openAuthSheet("signup"),
   loginBtn:       () => openAuthSheet("login"),
@@ -3376,6 +3738,9 @@ const CLICK_IDS = {
   wrapBtn:        () => openYearlyWrap(),
   wrapClose:      () => closeSheet(),
   wrapShare:      () => shareYearlyWrap(),
+  milestoneClose: () => closeMilestone(),
+  milestoneDone:  () => closeMilestone(),
+  milestoneShare: () => shareMilestone(),
   resetBtn:       () => resetEverything(),
   shareProfBtn:   () => openShare("Check my movie taste on Reeli 🎬",
                       location.origin + location.pathname + "?u=" + encodeURIComponent(CLOUD.profile.handle)),
@@ -3413,8 +3778,11 @@ const CLICK_IDS = {
   csave:          () => saveCustomMovie(),
   ccancel:        () => closeSheet(),
   // ranking result
-  doneBtn:        () => { commitTake(); closeSheet(); nav("ranks"); },
-  moreBtn:        () => { commitTake(); if(S.lbQueue && S.lbQueue.length){ S.lbQueue = []; save(); } closeSheet(); nav("search"); },
+  doneBtn:        () => { commitTake(); closeSheet(); nav("ranks"); maybeShowMilestone(); },
+  moreBtn:        () => { commitTake(); if(S.lbQueue && S.lbQueue.length){ S.lbQueue = []; save(); } closeSheet(); nav("search"); maybeShowMilestone(); },
+  // mid-import: a milestone earned here waits — showing it now would
+  // interrupt the Letterboxd queue's own flow. It stays pending and surfaces
+  // the moment the import run actually ends at doneBtn/moreBtn above.
   lbNext:         () => { commitTake(); rankNextImport(); },
   undoBtn:        () => undoPlacement(),
   // wallpaper picker
@@ -3486,11 +3854,22 @@ const FOCUSABLE = 'a[href],button:not([disabled]),input:not([disabled]),select,t
 function focusablesIn(root){
   return [...root.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null || el === document.activeElement);
 }
+// prefers-reduced-motion is already handled globally in CSS (every animation
+// is killed), but closeSheet() below also holds the DOM in place with a JS
+// timer to let the CSS exit animation play — with reduced motion there's no
+// animation to wait for, so that timer should collapse to 0 instead of
+// leaving a pointless pause before the sheet actually disappears.
+const reduceMotion = () => typeof matchMedia === "function" && matchMedia("(prefers-reduced-motion: reduce)").matches;
+let sheetCloseT = null;
 function openSheet(html, locked){
   // only remember the opener for the outermost sheet: re-rendering an open
   // sheet (openDetail does this when enrichment lands) must not make the sheet
   // itself the thing focus returns to
   if(!overlay.classList.contains("on")) sheetOpener = document.activeElement;
+  // reopening mid-close (e.g. openDetail() re-rendering while the previous
+  // sheet was still animating out) must cancel that close outright
+  clearTimeout(sheetCloseT);
+  overlay.classList.remove("closing");
   sheetLocked = !!locked;
   sheet.innerHTML = (locked ? "" : `<div class="grab" aria-hidden="true"></div>`) + html;
   overlay.classList.add("on");
@@ -3499,15 +3878,25 @@ function openSheet(html, locked){
   if(first) first.focus();
   else { sheet.setAttribute("tabindex", "-1"); sheet.focus(); }
 }
+/* closing plays the sheet/overlay entrance animations in reverse (see
+   .overlay.closing in styles.css) before the DOM actually goes away — a dead
+   plain class swap doesn't get a farewell animation, since `.overlay{display:
+   none}` would yank it off-screen mid-frame, so the actual teardown is held
+   behind a short timer matching the CSS animation's duration. */
 function closeSheet(force){
   if(sheetLocked && !force) return;
+  if(!overlay.classList.contains("on")) return;
   sheetLocked = false;
-  overlay.classList.remove("on");
-  sheet.innerHTML = "";
-  sheet.classList.remove("full");
-  sheet.removeAttribute("tabindex");
+  overlay.classList.add("closing");
   const back = sheetOpener;
   sheetOpener = null;
+  clearTimeout(sheetCloseT);
+  sheetCloseT = setTimeout(() => {
+    overlay.classList.remove("on", "closing");
+    sheet.innerHTML = "";
+    sheet.classList.remove("full");
+    sheet.removeAttribute("tabindex");
+  }, reduceMotion() ? 0 : 180);
   // the opener is often inside markup a re-render has since replaced, so only
   // restore focus if it is still connected to the document
   if(back && back.isConnected && typeof back.focus === "function") back.focus();
@@ -3545,7 +3934,7 @@ function openDetail(id){
           ${m.runtime ? ` · ${esc(m.runtime)}` : ""}${m.imdb ? `<br>★ ${esc(m.imdb)} on IMDb` : ""}</div>
         ${ranked ? `<div style="display:flex;align-items:center;gap:10px;margin-top:12px">
           ${scoreHTML(scoreOf(id))}<div class="d" style="font-size:12.5px">#${rankOf(id)} of ${allRanked(typeOf(id)).length}<br>on your list
-          ${S.rewatches[id] ? `<br>🔁 watched ${S.rewatches[id]}×` : ""}</div></div>` : ""}
+          ${S.rewatches[id] ? `<br>🔁 watched <span data-rewatch-count>${S.rewatches[id]}</span>×` : ""}</div></div>` : ""}
       </div>
     </div>
     ${m.desc ? `<p class="sub" style="margin:0 0 14px">${esc(m.desc)}</p>`
@@ -3594,6 +3983,13 @@ function detailAction(a){
 function logRewatch(id){
   S.rewatches[id] = (S.rewatches[id] || 0) + 1;
   save(); openDetail(id);
+  // openDetail() always renders the count plainly (every re-render of the
+  // sheet — enrichment landing, closing a hot-take editor — would otherwise
+  // replay the pulse too); only this specific "just logged a watch" moment
+  // should flash it, so the class is added by hand right after the sheet
+  // that just displayed it is rebuilt.
+  const rw = sheet.querySelector("[data-rewatch-count]");
+  if(rw) rw.classList.add("pulse");
   toast(`Logged — ${S.rewatches[id]}× now 🔁`);
   if(authed()){
     sb(pgPath("rewatches"), {method:"POST",
@@ -3696,6 +4092,7 @@ function renderMatchup(step){
 /* the user answered the matchup at R.mid */
 function answerMatchup(choice){
   if(!R || R.mid === undefined) return;
+  playSfx("click"); playHaptic(15);
   const verdict = rankChoose(R, R.mid, choice);
   if(verdict) placeAt(verdict.index); else stepCompare();
 }
@@ -3707,6 +4104,7 @@ function realSpliceIndex(idx){
   return arr.indexOf(typed[idx]);
 }
 function placeAt(idx){
+  playSfx("thunk"); playHaptic(28);
   ensureSaved(R.id);
   SYNC_TOUCH = R.id;
   S[R.bucket].splice(realSpliceIndex(idx), 0, R.id);
@@ -3721,6 +4119,17 @@ function placeAt(idx){
   S.myFeed.unshift({movie:R.id, score:sc, ts, note:"", likes:0, rank:rk});
   if(S.myFeed.length > 6) S.myFeed.pop();
   S.rankTimes[R.id] = ts;
+  // milestone check: exactly 1st or 50th ranking ACROSS all types (movies +
+  // shows + anime share one "how long have you been doing this" story, same
+  // as the header stat on the profile screen). Flip the shown-flag right here
+  // so it can only ever fire once — the actual full-screen moment is deferred
+  // to maybeShowMilestone(), called once the normal result-sheet flow (score
+  // reveal, Done/Rank another) has finished, so it never races or competes
+  // with that feedback. undoPlacement() below reverses this flip if the
+  // ranking that earned it gets undone.
+  const totalRanked = allRanked().length;
+  if(!S.milestonesShown.first && totalRanked === 1){ PENDING_MILESTONE = "first"; S.milestonesShown.first = true; }
+  else if(!S.milestonesShown.fifty && totalRanked === 50){ PENDING_MILESTONE = "fifty"; S.milestonesShown.fifty = true; }
   save();
   // catalog movies arrive without genre/director — backfill so lists show them
   enrich(R.id, ok => { if(ok){ save(); if(cur === "ranks") renderRanks(); } });
@@ -3743,6 +4152,18 @@ function placeAt(idx){
 /* the movie the result sheet is about — R is cleared as soon as it opens, so
    Done / Rank another / Undo read this instead */
 let PLACED_ID = null;
+/* a milestone earned by the placement just made (see placeAt()), waiting for
+   the normal result-sheet flow to finish before it gets its own full-screen
+   moment — see maybeShowMilestone(). null the rest of the time. */
+let PENDING_MILESTONE = null;
+/* called once Done / Rank another / the next Letterboxd import has taken over
+   the screen, so the celebration never races the score reveal or delays it */
+function maybeShowMilestone(){
+  if(!PENDING_MILESTONE) return;
+  const which = PENDING_MILESTONE;
+  PENDING_MILESTONE = null;
+  openMilestoneSheet(which);
+}
 /* the hot-take box is optional and unsubmitted; harvest it before leaving */
 function commitTake(){
   const inp = $("#takeInp");
@@ -3755,9 +4176,13 @@ function commitTake(){
 }
 function undoPlacement(){
   if(!PLACED_ID) return;
+  playSfx("rewind");
   removeRanking(PLACED_ID);
   delete S.notes[PLACED_ID];
   if(S.myFeed.length && S.myFeed[0].movie === PLACED_ID) S.myFeed.shift();
+  // the placement that just earned a milestone never happened after all —
+  // un-flip it so a re-ranked 1st/50th can still earn it for real later
+  if(PENDING_MILESTONE){ S.milestonesShown[PENDING_MILESTONE] = false; PENDING_MILESTONE = null; }
   save(); closeSheet(); render(cur); toast("Ranking undone");
 }
 
