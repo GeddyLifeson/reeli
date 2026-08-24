@@ -1601,7 +1601,7 @@ async function openPerson(id){
       ${match !== null ? `<div class="matchring" style="--pct:${match}" title="Taste match across ${overlap.length} shared title${overlap.length===1?"":"s"}"><span>${match}%</span></div>` : ""}
     </div>
     ${both.length ? `<div class="sechead">You both ranked</div><div class="card" style="padding:6px 14px">
-      ${both.map(r => `<div class="bothrow"><span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(r.title)}</span>
+      ${both.map(r => `<div class="bothrow">${posterHTML(getMovie(r.movie_id) || rowToMovie(r), "p-xs")}<span class="t">${esc(r.title)}</span>
         <span class="score sc ${scoreClass(scoreOf(r.movie_id))}" title="Your score">${scoreOf(r.movie_id).toFixed(1)}</span>
         <span class="score sc ${scoreClass(Number(r.score))}" title="Their score">${Number(r.score).toFixed(1)}</span></div>`).join("")}
       <div style="display:flex;justify-content:flex-end;gap:14px;color:var(--muted);font-size:10.5px;padding:8px 2px 4px"><span>you</span><span>them</span></div></div>` : ""}
