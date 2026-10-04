@@ -468,6 +468,13 @@
   .fullprofile{min-height:100dvh;padding:20px 20px calc(20px + env(safe-area-inset-bottom));
     background-color:var(--bg);background-size:cover;background-position:center top}
   .fullhead{display:flex;justify-content:flex-end;margin-bottom:12px}
+  .legalbody{font-size:13.5px;line-height:1.6;color:var(--ink);padding-bottom:30px}
+  .legalbody h2{font-size:15px;margin:22px 0 6px;color:var(--ink)}
+  .legalbody h2:first-child{margin-top:0}
+  .legalbody p{margin:0 0 10px}
+  .legalbody ul{margin:0 0 10px;padding-left:20px}
+  .legalbody li{margin:0 0 6px}
+  .legalbody a{color:var(--accent)}
 
   /* milestone celebrations: first ranking / 50th / one-year anniversary.
      Same .fullprofile shell as the full profile and yearly wrap-up, plus a
@@ -559,6 +566,8 @@
   .swatch.cur{border-color:var(--ink)}
   .authnote{text-align:center;color:var(--muted);font-size:11.5px;line-height:1.5;max-width:340px;margin:14px auto 0}
   .ghostlink{display:block;margin:14px auto 0;color:var(--muted);font-size:13px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+  .linklike{color:var(--accent);text-decoration:underline;text-underline-offset:2px;cursor:pointer;
+    background:none;border:none;padding:0;font:inherit;font-size:11.5px}
 
   /* onboarding taste picker */
   .chipgrid{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 4px}

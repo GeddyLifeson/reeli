@@ -1858,6 +1858,173 @@ function startOauth(provider){
     "&redirect_to=" + encodeURIComponent(location.origin + location.pathname);
 }
 
+/* ---- legal: privacy policy + terms of service ----
+   Both are static full-screen sheets (same openSheet()+.full pattern as
+   openFullProfile()/the yearly wrap-up), written to describe what this app
+   actually does — not boilerplate copied from somewhere else. Kept in sync
+   with reality by hand: if a future change starts collecting a new kind of
+   data or adds a new third-party service, these two functions are the ones
+   to update. LEGAL_UPDATED is the one date to bump when the content changes. */
+const LEGAL_UPDATED = "October 2026";
+const LEGAL_CONTACT_URL = "https://github.com/GeddyLifeson/reeli/issues";
+function legalPageHTML(title, bodyHtml){
+  return `<div class="fullprofile">
+    <div class="fullhead"><button class="pillbtn soft" id="legalClose" aria-label="Close ${esc(title)}">✕ Close</button></div>
+    <h1 class="h1">${esc(title)}</h1>
+    <p class="sub">Last updated ${LEGAL_UPDATED}.</p>
+    <div class="legalbody">${bodyHtml}</div>
+  </div>`;
+}
+function privacyPolicyHTML(){
+  return legalPageHTML("Privacy Policy", `
+    <p>Reeli is a free, independently-run movie/TV/anime ranking app. This page explains
+    what information it collects, why, and what you can do about it. It's written in plain
+    language on purpose — if anything here is unclear, use the contact link at the bottom.</p>
+
+    <h2>What Reeli collects</h2>
+    <p>If you create an account: the email address and password you sign up with (handled
+    by Supabase, our authentication provider — Reeli never sees or stores your password in
+    plain text). After that, your public profile (handle, display name, avatar color) and
+    whatever you choose to do in the app: rankings and scores, optional notes, your
+    watchlist, likes/dislikes, follows, hot takes and replies, rewatch logs, and watch-party
+    membership. If you use "Continue as guest," none of this touches our servers at all —
+    it's saved only in your browser's local storage.</p>
+
+    <h2>What Reeli does <i>not</i> collect</h2>
+    <p>No payment or billing information (Reeli has no purchases, subscriptions, or
+    in-app sales). No advertising identifiers, no analytics SDKs, no tracking pixels,
+    and no third-party ad networks — there is no analytics or tracking code in this
+    app at all. We don't collect anything beyond what's needed to run the features
+    described above.</p>
+
+    <h2>How it's used, and who can see it</h2>
+    <p>Your data runs the app's own features — building your ranked list, showing your
+    profile to Reelmates, powering recommendations from your taste. It is never sold,
+    and never shared with advertisers. Because Reeli is a social app, most of your
+    activity (your rankings, your profile, your hot takes) is visible to other users —
+    that's the point of it. Your watchlist and dislikes are private to you by design and
+    never shown to anyone else.</p>
+
+    <h2>Third-party services</h2>
+    <p>Reeli is built on a few outside services, each used only for what it's named for:</p>
+    <ul>
+      <li><b>Supabase</b> — hosts the database, handles account sign-in, and stores
+        everything described above.</li>
+      <li><b>Cinemeta (Stremio)</b> and <b>AniList</b> — free, keyless public catalogs
+        Reeli queries for movie/show/anime titles, artwork, and metadata when you
+        search or browse. Only the search text you type is sent to them; no account
+        or personal information is ever included in those requests.</li>
+    </ul>
+
+    <h2>Cookies and local storage</h2>
+    <p>Reeli does not use cookies, and nothing here is used to track you across other
+    sites. It does use your browser's local storage — a standard web feature, not a
+    cookie — to keep the app working offline, remember your session, and cache poster
+    art so it loads faster. This is strictly functional (the app literally cannot work
+    without it) and is never used for tracking or advertising. You can clear it any
+    time with "Reset all my data" in your profile.</p>
+
+    <h2>Your data, your controls</h2>
+    <p>"Back up data" in your profile exports everything you've ranked as a file you
+    keep. "Reset all my data" permanently erases your local data on this device. To
+    delete a cloud account entirely, reach out via the contact link below and we'll
+    remove it.</p>
+
+    <h2>Children's privacy</h2>
+    <p>Reeli isn't directed at children under 13, and we don't knowingly collect
+    information from anyone under that age.</p>
+
+    <h2>Changes</h2>
+    <p>If this policy changes in a way that matters, the date at the top of this page
+    will update to reflect it.</p>
+
+    <h2>Contact</h2>
+    <p>Questions, data requests, or account deletion: <a href="${LEGAL_CONTACT_URL}" target="_blank" rel="noopener">open an issue on GitHub</a>.</p>
+  `);
+}
+function termsHTML(){
+  return legalPageHTML("Terms of Service", `
+    <p>By using Reeli, you agree to these terms. If you don't agree, please don't use
+    the app. This is a small, independently-run project — these terms are written to be
+    read, not to bury you in legalese.</p>
+
+    <h2>The service</h2>
+    <p>Reeli is a free app for ranking movies, TV shows, and anime through head-to-head
+    comparisons, and for following other people's rankings and taste. There is nothing
+    to buy — no subscriptions, no purchases, no refunds to speak of, because nothing is
+    ever charged.</p>
+
+    <h2>Accounts</h2>
+    <p>You can use Reeli as a guest (nothing leaves your device) or create an account to
+    sync across devices and connect with other users. You're responsible for keeping
+    your login credentials to yourself, and for anything that happens under your account.</p>
+
+    <h2>Your content</h2>
+    <p>Anything you post — rankings, notes, hot takes, replies — is yours. By posting it,
+    you're giving Reeli permission to show it to other users as part of how the app
+    normally works (that's the entire point of a social ranking app). You can delete your
+    content at any time; removing a ranking removes the hot take and replies tied to it.</p>
+
+    <h2>Acceptable use</h2>
+    <p>Don't use Reeli to harass other users, impersonate someone else, scrape or abuse
+    the service, or post anything illegal. We can remove content or suspend accounts
+    that cross these lines.</p>
+
+    <h2>Third-party content</h2>
+    <p>Movie, show, and anime titles, artwork, and metadata shown in Reeli come from
+    third-party catalogs (Cinemeta/Stremio and AniList) and belong to their respective
+    copyright and trademark holders. They're shown for identification purposes only —
+    to tell you which title you're ranking. Reeli isn't affiliated with, and isn't
+    endorsed by, any studio, distributor, or the catalogs it queries.</p>
+
+    <h2>No warranty</h2>
+    <p>Reeli is provided "as is." We try to keep it accurate and working, but can't
+    guarantee it'll be error-free, uninterrupted, or available at any given moment —
+    it's a free, independently-run project, not a commercial service with uptime
+    guarantees.</p>
+
+    <h2>Limitation of liability</h2>
+    <p>To the extent the law allows, Reeli and whoever runs it aren't liable for
+    damages arising from your use of the app, including lost data — which is exactly
+    why the "Back up data" button exists.</p>
+
+    <h2>Termination</h2>
+    <p>You can stop using Reeli, or delete your account, whenever you want. We may
+    suspend or remove accounts that violate the acceptable-use section above.</p>
+
+    <h2>Changes</h2>
+    <p>These terms may be updated as the app changes. The date at the top of this
+    page reflects the last update.</p>
+
+    <h2>Contact</h2>
+    <p>Questions about these terms: <a href="${LEGAL_CONTACT_URL}" target="_blank" rel="noopener">open an issue on GitHub</a>.</p>
+  `);
+}
+function openPrivacyPolicy(){ openSheet(privacyPolicyHTML()); sheet.classList.add("full"); }
+function openTermsOfService(){ openSheet(termsHTML()); sheet.classList.add("full"); }
+/* the small "by continuing you agree..." notice shown wherever an account can
+   be created (the entry gate's own buttons, and the email auth sheet — both
+   render their own oauthBtnsHTML(), both are places signup actually happens),
+   not shown anywhere scores/content render since nothing there creates an
+   account. Two near-identical copies with their own literal ids, rather than
+   one function with a templated id, because test/delegation.mjs's static
+   coverage check regexes app.js's own source text for `id="literal"` — a
+   template-interpolated id is invisible to it even though it resolves fine
+   at runtime. Two copies are also needed in the first place because the auth
+   sheet opens as a sheet layered over the still-visible gate, so both can be
+   in the DOM at once (same reason logoutBtn has a logoutBtn2 twin elsewhere
+   in this file) — one shared id would collide. */
+function gateConsentHTML(){
+  return `<p class="authnote" style="margin-top:2px">By continuing, you agree to Reeli's
+    <button class="linklike" id="gateTermsLink">Terms</button> and
+    <button class="linklike" id="gatePrivacyLink">Privacy Policy</button>.</p>`;
+}
+function auConsentHTML(){
+  return `<p class="authnote" style="margin-top:2px">By continuing, you agree to Reeli's
+    <button class="linklike" id="auTermsLink">Terms</button> and
+    <button class="linklike" id="auPrivacyLink">Privacy Policy</button>.</p>`;
+}
+
 /* ---- entry gate: sign up / log in up front, guest is an explicit choice ---- */
 function showGate(){
   $("#gate").innerHTML = `
@@ -1882,7 +2049,8 @@ function showGate(){
       <button class="pillbtn" id="gateLogin" style="padding:13px;font-size:15px">Log in</button>
     </div>
     <button class="ghostlink" id="gateGuest">Continue as guest</button>
-    <p class="authnote">Accounts sync your list and let friends find you. Guest mode saves to this browser only — you can create an account later and your list carries over.</p>`;
+    <p class="authnote">Accounts sync your list and let friends find you. Guest mode saves to this browser only — you can create an account later and your list carries over.</p>
+    ${gateConsentHTML()}`;
   $("#gate").classList.add("on");
 }
 function continueAsGuest(){
@@ -1917,6 +2085,7 @@ function openAuthSheet(mode){
         <button class="pillbtn acc" id="ausubmit" style="padding:11px 20px">${signup ? "Sign up" : "Log in"}</button>
         <button class="pillbtn" id="auswap">${signup ? "I have an account" : "I need an account"}</button>
       </div>
+      ${auConsentHTML()}
     </div>`);
 }
 function authErr(msg){ const e = $("#auerr"); if(e){ e.textContent = msg; e.style.display = "block"; } }
@@ -3278,7 +3447,11 @@ function profileHTML(d){
     ${profileFranchisesHTML()}
     ${profileActionsHTML(d)}
     <button class="danger" id="resetBtn">Reset all my data</button>
-    <div style="color:var(--muted);font-size:10.5px;margin-top:14px">Reeli build ${BUILD}</div>`;
+    <div style="display:flex;gap:12px;margin-top:16px">
+      <button class="linklike" id="privacyBtn" style="font-size:11.5px">Privacy Policy</button>
+      <button class="linklike" id="termsBtn" style="font-size:11.5px">Terms of Service</button>
+    </div>
+    <div style="color:var(--muted);font-size:10.5px;margin-top:10px">Reeli build ${BUILD}</div>`;
 }
 function renderProfile(){
   $("#profileWrap").innerHTML = profileHTML(profileData());
@@ -3751,6 +3924,14 @@ const CLICK_IDS = {
   gateSignup:     () => openAuthSheet("signup"),
   gateLogin:      () => openAuthSheet("login"),
   gateGuest:      () => continueAsGuest(),
+  gateTermsLink:  () => openTermsOfService(),
+  gatePrivacyLink:() => openPrivacyPolicy(),
+  // legal
+  privacyBtn:     () => openPrivacyPolicy(),
+  termsBtn:       () => openTermsOfService(),
+  legalClose:     () => closeSheet(),
+  auTermsLink:    () => openTermsOfService(),
+  auPrivacyLink:  () => openPrivacyPolicy(),
   // auth sheet
   auswap:         () => openAuthSheet(AUTH_MODE === "signup" ? "login" : "signup"),
   ausubmit:       () => submitAuth(),
