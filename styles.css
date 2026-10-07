@@ -316,6 +316,10 @@
   .searchbar input{border:none;outline:none;background:transparent;color:var(--ink);font-size:16px;width:100%}
   .searchbar:focus-within{outline:2px solid var(--accent);outline-offset:2px}
   .searchbar input::placeholder{color:var(--muted)}
+  /* "Ask Reeli" — same search field, dressed as the smart/distinct one so it
+     doesn't get mistaken for the plain exact-title box right below it */
+  .askbar{border-color:var(--accent)}
+  .askbar svg{color:var(--accent)}
 
   /* feed */
   .fgrid{display:grid;grid-template-columns:1fr;gap:12px}
