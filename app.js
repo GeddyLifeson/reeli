@@ -3963,6 +3963,7 @@ function openDetail(id){
            <button class="pillbtn" data-a="unrank">Remove ranking</button>`
         : `<button class="pillbtn acc" data-a="rate">Rank it</button>
            <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
+      <a class="pillbtn" style="color:inherit;text-decoration:none;display:inline-flex;align-items:center" href="https://www.youtube.com/results?search_query=${encodeURIComponent([m.title, m.year, "trailer"].filter(Boolean).join(" "))}" target="_blank" rel="noopener">▶ Watch trailer</a>
       <button class="pillbtn" data-a="close">Close</button>
     </div>
     <div id="commWrap"></div>`);
@@ -4282,6 +4283,16 @@ function pickWallpaper(el){
 /* ---------- share sheet: native share + platform intents ---------- */
 let SHARE = null; // what the open share sheet is sharing
 function openShare(text, url){
+  if(typeof navigator.share === "function"){
+    // prefer the real OS share sheet (Messages, Mail, any installed app) over
+    // our hand-built list of destinations. Split the first line off as the
+    // share title — the rest reads as the body in a native sheet.
+    const nl = text.indexOf("\n");
+    const title = nl === -1 ? "Reeli" : text.slice(0, nl);
+    const body = nl === -1 ? text : text.slice(nl + 1);
+    navigator.share({title, text: body, url}).catch(() => {}); // user cancel -> AbortError, silently ignored
+    return;
+  }
   SHARE = {text, url};
   openSheet(`
     <h1 class="h1">Share</h1>
