@@ -2748,20 +2748,37 @@ function loadTrending(type){
     if(Array.isArray(list)) list.forEach(m => { if(!getMovie(m.id)) LIVE[m.id] = m; });
     if(cur === "search" && !query.trim() && type === searchType) renderSearch();
   };
+  /* one retry for a transient failure, same pattern as cineMeta()'s own
+     retry below — without this, a single dropped request permanently
+     starves this type's trending list (TRENDING[type] stuck at "err",
+     loadTrending()'s own guard above means it's never attempted again
+     without a full page reload). That matters more here than it did for a
+     single detail-sheet enrichment call: "Ask Reeli" has no built-in-library
+     fallback for shows/anime the way it does for movies (askPool() only
+     adds MOVIES for type==="movie"), so a shows/anime trending fetch stuck
+     on "err" means Ask Reeli permanently returns nothing for that type. */
   if(type === "movie"){
-    getJSON(CINE + "/catalog/movie/top.json", d => {
-      if(!d || !Array.isArray(d.metas)) return land("err");
-      const locals = new Set(DB.map(m => normT(m.title)+"|"+m.year));
-      land(d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year)));
+    const attempt = after => getJSON(CINE + "/catalog/movie/top.json", after);
+    attempt(d => {
+      if(d && Array.isArray(d.metas)) return land(toMovieTrending(d));
+      setTimeout(() => attempt(d2 => land(d2 && Array.isArray(d2.metas) ? toMovieTrending(d2) : "err")), 900);
     });
   } else if(type === "show"){
-    getJSON(CINE + "/catalog/series/top.json", d => {
-      if(!d || !Array.isArray(d.metas)) return land("err");
-      land(d.metas.slice(0, 14).map(r => cineToMovie(r, "show")));
+    const attempt = after => getJSON(CINE + "/catalog/series/top.json", after);
+    attempt(d => {
+      if(d && Array.isArray(d.metas)) return land(d.metas.slice(0, 14).map(r => cineToMovie(r, "show")));
+      setTimeout(() => attempt(d2 => land(d2 && Array.isArray(d2.metas) ? d2.metas.slice(0, 14).map(r => cineToMovie(r, "show")) : "err")), 900);
     });
   } else {
-    anilistTrending(list => land(list || "err"));
+    anilistTrending(list => {
+      if(list) return land(list);
+      setTimeout(() => anilistTrending(list2 => land(list2 || "err")), 900);
+    });
   }
+}
+function toMovieTrending(d){
+  const locals = new Set(DB.map(m => normT(m.title)+"|"+m.year));
+  return d.metas.slice(0, 14).map(r => cineToMovie(r)).filter(m => !locals.has(normT(m.title)+"|"+m.year));
 }
 function renderSearch(){
   const q = query.trim().toLowerCase();
