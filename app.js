@@ -1615,8 +1615,10 @@ async function openPerson(id){
   hydratePosters(sheet);
 }
 /* full-screen profile view: reuses the sheet/overlay machinery (openSheet/
-   closeSheet) rather than a 6th nav screen, just adds .full to #sheet so the
-   CSS fills the viewport instead of drawing a bottom drawer. Shows every
+   closeSheet) rather than a 6th nav screen. The body is wrapped in
+   .fullprofile, and `.sheet:has(> .fullprofile)` in styles.css fills the
+   viewport instead of drawing a bottom drawer purely from that markup — no
+   JS class toggle needed. Shows every
    ranked title per type (capped at 30/type — plenty for a "full" view without
    rendering an unbounded list for someone with hundreds of rankings), and
    paints the *viewed person's* wallpaper via an inline style scoped to this
@@ -1661,10 +1663,9 @@ function personPodiumHTML(byType){
 async function openFullProfile(){
   if(!SHEET_PERSON) return;
   const id = SHEET_PERSON.id;
-  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
-  sheet.classList.add("full");
+  openSheet(`<div class="fullprofile"><div class="empty" style="padding:30px"><p>Loading profile…</p></div></div>`);
   const data = await loadPersonData(id);
-  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); sheet.classList.add("full"); return; }
+  if(!data){ openSheet(`<div class="fullprofile"><div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div></div>`); return; }
   const {p, rows, byType} = data;
   SHEET_PERSON = {id, handle: p.handle, name: p.display_name};
   const sm = personProfileSummary(rows);
@@ -1707,7 +1708,6 @@ async function openFullProfile(){
         <div class="chips">${sm.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>` : ""}
       ${rows.length ? personPodiumHTML(byType) : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
     </div>`, false);
-  sheet.classList.add("full");
   hydratePosters(sheet);
 }
 /* follow/unfollow from an open profile sheet. CLOUD.follows is re-read here
@@ -2978,11 +2978,12 @@ function profileWrapEntryHTML(){
     </button>`;
 }
 /* full-screen wrap-up sheet — same #sheet-fills-the-viewport pattern as
-   openFullProfile() (openSheet + sheet.classList.add("full")), not a new
+   openFullProfile(): the sheet fills the viewport automatically because its
+   content's .fullprofile wrapper is what the "sheet goes full-screen" CSS
+   rule keys off of (`.sheet:has(> .fullprofile)` in styles.css) — not a new
    screen/nav entry. */
 function openYearlyWrap(){
   openSheet(yearlyWrapHTML());
-  sheet.classList.add("full");
 }
 function yearlyWrapHTML(){
   const w = wrapYearStats(), year = new Date().getUTCFullYear();
@@ -3044,8 +3045,9 @@ function shareYearlyWrap(){
 
 /* ---------- milestone celebrations: first ranking, 50th, one year on Reeli ----------
    Three genuine "pause and notice this" moments, deliberately full-screen
-   (openSheet + sheet.classList.add("full"), the same mechanism openFullProfile()
-   and openYearlyWrap() use) rather than another toast — this app already has a
+   (openSheet with a .fullprofile-wrapped body, the same mechanism openFullProfile()
+   and openYearlyWrap() use — see the `.sheet:has(> .fullprofile)` rule in
+   styles.css) rather than another toast — this app already has a
    toast for "ranking undone"/"link copied", and a milestone is meant to read as
    a bigger deal than that. See S.milestonesShown for the one-shot persistence
    and placeAt()/maybeShowMilestone() for how the first two get triggered
@@ -3108,7 +3110,6 @@ let MILESTONE_ACTIVE = null; // which one the open sheet is showing — read by 
 function openMilestoneSheet(which, refDate){
   MILESTONE_ACTIVE = which;
   openSheet(milestoneHTML(which, refDate));
-  sheet.classList.add("full");
   hydratePosters(sheet);
 }
 function closeMilestone(){ MILESTONE_ACTIVE = null; closeSheet(); }
@@ -3893,8 +3894,10 @@ function closeSheet(force){
   clearTimeout(sheetCloseT);
   sheetCloseT = setTimeout(() => {
     overlay.classList.remove("on", "closing");
+    // sheet.innerHTML = "" also drops whatever .fullprofile wrapper was inside
+    // it, so the `.sheet:has(> .fullprofile)` full-screen rule in styles.css
+    // stops matching on its own — nothing to undo by hand here.
     sheet.innerHTML = "";
-    sheet.classList.remove("full");
     sheet.removeAttribute("tabindex");
   }, reduceMotion() ? 0 : 180);
   // the opener is often inside markup a re-render has since replaced, so only
