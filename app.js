@@ -765,7 +765,22 @@ function nav(to){
   document.querySelectorAll(".screen").forEach(s =>
     s.classList.remove("slide-out-l", "slide-out-r", "slide-in-l", "slide-in-r"));
 
-  if(switching && !REDUCE_MOTION){
+  // progressive enhancement: where the browser supports it, let the native
+  // View Transitions API cross-fade the two screens itself (snapshot old DOM,
+  // run the swap, snapshot new DOM, animate between them) instead of the
+  // hand-built slide-class/setTimeout dance below. Still gated on REDUCE_MOTION
+  // first so `prefers-reduced-motion` turns off ANY transition, native or not;
+  // Firefox and older browsers (no startViewTransition) always fall through to
+  // the existing slide, which is why that code stays — this is additive, not a
+  // replacement.
+  const nativeTransition = switching && !REDUCE_MOTION && typeof document.startViewTransition === "function";
+
+  if(nativeTransition){
+    document.startViewTransition(() => {
+      document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+      toEl.classList.add("on");
+    });
+  } else if(switching && !REDUCE_MOTION){
     // "which aisle is further right" — slide toward the tab you tapped
     const fromEl = $("#scr-"+from);
     const forward = NAV_ORDER.indexOf(to) > NAV_ORDER.indexOf(from);
@@ -1615,8 +1630,10 @@ async function openPerson(id){
   hydratePosters(sheet);
 }
 /* full-screen profile view: reuses the sheet/overlay machinery (openSheet/
-   closeSheet) rather than a 6th nav screen, just adds .full to #sheet so the
-   CSS fills the viewport instead of drawing a bottom drawer. Shows every
+   closeSheet) rather than a 6th nav screen. The body is wrapped in
+   .fullprofile, and `.sheet:has(> .fullprofile)` in styles.css fills the
+   viewport instead of drawing a bottom drawer purely from that markup — no
+   JS class toggle needed. Shows every
    ranked title per type (capped at 30/type — plenty for a "full" view without
    rendering an unbounded list for someone with hundreds of rankings), and
    paints the *viewed person's* wallpaper via an inline style scoped to this
@@ -1661,10 +1678,9 @@ function personPodiumHTML(byType){
 async function openFullProfile(){
   if(!SHEET_PERSON) return;
   const id = SHEET_PERSON.id;
-  openSheet(`<div class="empty" style="padding:30px"><p>Loading profile…</p></div>`);
-  sheet.classList.add("full");
+  openSheet(`<div class="fullprofile"><div class="empty" style="padding:30px"><p>Loading profile…</p></div></div>`);
   const data = await loadPersonData(id);
-  if(!data){ openSheet(`<div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div>`); sheet.classList.add("full"); return; }
+  if(!data){ openSheet(`<div class="fullprofile"><div class="empty" style="padding:30px"><p>Couldn't load this profile — try again.</p></div></div>`); return; }
   const {p, rows, byType} = data;
   SHEET_PERSON = {id, handle: p.handle, name: p.display_name};
   const sm = personProfileSummary(rows);
@@ -1707,7 +1723,6 @@ async function openFullProfile(){
         <div class="chips">${sm.topGenres.map(([g,c]) => `<span class="chip">${esc(g)} · ${c}</span>`).join("")}</div>` : ""}
       ${rows.length ? personPodiumHTML(byType) : `<div class="sechead">Rankings</div><div class="empty"><p>Nothing ranked yet.</p></div>`}
     </div>`, false);
-  sheet.classList.add("full");
   hydratePosters(sheet);
 }
 /* follow/unfollow from an open profile sheet. CLOUD.follows is re-read here
@@ -2473,6 +2488,200 @@ function lovedMovieAnchor(){
 function similarityTo(anchor, m){
   return (anchor.genre && m.genre === anchor.genre ? 2 : 0) + (anchor.dir && m.dir === anchor.dir ? 3 : 0);
 }
+
+/* ---------- Ask Reeli: free-text search/recommendation ----------
+   A focused, rule-based parser — not a full NLP pipeline — that pulls
+   whichever signals a query actually carries (an anchor title to be "like",
+   mood/genre words, a director name, a decade or "recent", and, for anime
+   only, a length hint) and scores every candidate in the CURRENT tab's pool
+   by how many of them it satisfies. No network call and no new data source:
+   everything it reasons over (S.loved/fine/disliked, S.taste, DB/S.custom/
+   LIVE, TRENDING) is already in memory — see tasteScore()/similarityTo()
+   above, whose scoring this borrows and combines. */
+let askQuery = "";
+
+/* mood/genre words -> this app's OWN genre vocabulary (OB_GENRES, below) —
+   never invent a genre name the rest of the app doesn't use. Keys are tried
+   longest-first so a multi-word phrase ("love story") isn't shadowed by a
+   shorter one. */
+const ASK_GENRE_WORDS = {
+  "funny":"Comedy", "funnier":"Comedy", "comedy":"Comedy", "comedic":"Comedy", "hilarious":"Comedy",
+  "lighthearted":"Comedy", "light hearted":"Comedy", "goofy":"Comedy", "silly":"Comedy",
+  "sad":"Drama", "sadder":"Drama", "depressing":"Drama", "tearjerker":"Drama", "heartbreaking":"Drama",
+  "emotional":"Drama", "drama":"Drama", "dramatic":"Drama",
+  "scary":"Horror", "horror":"Horror", "creepy":"Horror", "terrifying":"Horror", "spooky":"Horror", "frightening":"Horror",
+  "scifi":"Sci-Fi", "sci fi":"Sci-Fi", "sci-fi":"Sci-Fi", "space":"Sci-Fi", "futuristic":"Sci-Fi",
+  "romantic":"Romance", "romance":"Romance", "love story":"Romance",
+  "action":"Action", "action packed":"Action", "explosive":"Action",
+  "mystery":"Mystery", "whodunit":"Mystery", "twisty":"Mystery", "mysterious":"Mystery",
+  "crime":"Crime", "heist":"Crime", "mob":"Crime", "mafia":"Crime", "gangster":"Crime",
+  "war":"War", "wartime":"War",
+  "documentary":"Documentary", "true story":"Documentary", "real life":"Documentary",
+  "adventure":"Adventure", "epic journey":"Adventure",
+  "western":"Western", "cowboy":"Western", "cowboys":"Western",
+  "fantasy":"Fantasy", "magical":"Fantasy", "magic":"Fantasy",
+  "animated":"Animation", "cartoon":"Animation", "animation":"Animation",
+  "anime":"Anime",
+  "thriller":"Thriller", "suspenseful":"Thriller", "suspense":"Thriller", "tense":"Thriller", "edge of your seat":"Thriller",
+};
+const ASK_GENRE_PHRASES = Object.keys(ASK_GENRE_WORDS).sort((a, b) => b.length - a.length);
+
+/* "90s"/"1990s"/"80s"/"2010s" -> {from, to}. A bare two-digit decade with no
+   century ("10s"/"20s"/"00s") reads as the 2000s (today's common usage);
+   30-90 reads as the 1900s (nobody means the 2030s yet). */
+function askDecade(raw){
+  let m = raw.match(/\b(19|20)(\d)0s\b/);
+  if(m){ const start = parseInt(m[1] + m[2] + "0", 10); return { from: start, to: start + 9 }; }
+  m = raw.match(/\b(\d)0s\b/);
+  if(m){ const d = parseInt(m[1], 10), start = (d <= 2 ? 2000 : 1900) + d * 10; return { from: start, to: start + 9 }; }
+  return null;
+}
+
+/* fuzzy-match free text against the user's own ranked titles — same scoring
+   shape as matching.js's pickMeta(), reusing normT()/lev() from there, just
+   anchored on "what did they mean by this title" instead of "which catalog
+   row is this". Searches every ranked type: an anchor found while browsing
+   the Shows tab can still be a loved movie — similarityTo() below only
+   compares genre/dir strings, which works fine across types. */
+function findAnchorTitle(text){
+  const want = normT(text);
+  if(!want) return null;
+  let best = null, bestScore = -1;
+  for(const id of allRanked()){
+    const m = getMovie(id);
+    if(!m) continue;
+    const got = normT(m.title);
+    if(!got) continue;
+    let s = 0;
+    if(got === want) s = 100;
+    else if(got.includes(want) || want.includes(got)){
+      const ratio = Math.min(got.length, want.length) / Math.max(got.length, want.length);
+      s = Math.round(70 * Math.max(0.3, ratio));
+    } else {
+      const cap = Math.max(1, Math.floor(Math.max(got.length, want.length) / 6));
+      if(lev(got, want, cap) <= cap) s = 60;
+    }
+    if(s > bestScore){ bestScore = s; best = m; }
+  }
+  return bestScore >= 45 ? best : null;
+}
+
+/* fuzzy-match free text against a director name, tolerating one typo per
+   word ("christoper nolan") — tries an exact substring first, then slides a
+   same-length word-window across the query for a near match. */
+function findDirMatch(raw, dirPool){
+  const tokens = raw.split(" ").filter(Boolean);
+  let best = null, bestLen = 0;
+  for(const d of dirPool){
+    const nd = normT(d);
+    if(!nd) continue;
+    if(raw.includes(nd)){ if(nd.length > bestLen){ bestLen = nd.length; best = d; } continue; }
+    const dtoks = nd.split(" ");
+    for(let i = 0; i + dtoks.length <= tokens.length; i++){
+      let ok = true;
+      for(let j = 0; j < dtoks.length; j++){
+        const w = tokens[i + j], cap = Math.max(1, Math.floor(dtoks[j].length / 4));
+        if(w !== dtoks[j] && lev(w, dtoks[j], cap) > cap){ ok = false; break; }
+      }
+      if(ok && nd.length > bestLen){ bestLen = nd.length; best = d; }
+    }
+  }
+  return best;
+}
+
+/* every director name this app already knows about — OB_MAKERS (the
+   onboarding list), every ranked title's director, and the whole built-in
+   library — so "a Wes Anderson type thing" has something to match against
+   even for a director the user has never personally ranked. */
+function askDirPool(){
+  const set = new Set(OB_MAKERS);
+  for(const id of allRanked()){ const m = getMovie(id); if(m && m.dir) set.add(m.dir); }
+  DB.forEach(m => m.dir && set.add(m.dir));
+  return set;
+}
+
+/* pulls out every recognizable hint from the query, scoped to `type` for the
+   anime-only length hint (this app has no runtime field on movies/shows —
+   see askScore()'s comment below) */
+function parseAskQuery(q, type){
+  const raw = normT(q);
+  const out = { anchor: null, genres: new Set(), dir: null, decade: askDecade(raw),
+    recent: /\b(recent|newest|latest|new release|modern)\b/.test(raw), length: null };
+  for(const phrase of ASK_GENRE_PHRASES) if(raw.includes(phrase)) out.genres.add(ASK_GENRE_WORDS[phrase]);
+  if(type === "anime"){
+    if(/\b(short|quick|bite sized|brief)\b/.test(raw)) out.length = "short";
+    else if(/\b(long|epic|binge|lengthy)\b/.test(raw)) out.length = "long";
+  }
+  const likeMatch = q.match(/\b(?:something like|similar to|in the style of|reminds? me of|like)\s+([^.!?]+)/i);
+  if(likeMatch){
+    const titlePart = likeMatch[1].replace(/\b(but|except|only|though)\b.*$/i, "").replace(/[.,!?]+$/, "").trim();
+    if(titlePart) out.anchor = findAnchorTitle(titlePart);
+  }
+  out.dir = findDirMatch(raw, askDirPool());
+  return out;
+}
+
+/* no runtime/length field exists anywhere in this app's movie/show data
+   (getMovie()'s shape, cineToMovie() and the built-in DB[] rows all lack one
+   — Cinemeta's /meta endpoint does return a runtime, but only once a title
+   is individually enriched via enrich(), which only happens from the detail
+   sheet, not in bulk across a whole search pool) — so "short"/"long" movie
+   queries are intentionally NOT filtered on length; only anime gets a length
+   signal, from its real `episodes`/`format` fields (aniToMovie()). */
+function askScore(m, parsed){
+  let score = 0, hit = false;
+  if(parsed.anchor && m.id !== parsed.anchor.id){
+    const sim = similarityTo(parsed.anchor, m);
+    if(sim > 0){ score += sim * 3; hit = true; }
+  }
+  if(parsed.genres.size && parsed.genres.has(m.genre)){ score += 8; hit = true; }
+  if(parsed.dir && m.dir && normT(m.dir) === normT(parsed.dir)){ score += 10; hit = true; }
+  if(parsed.decade && typeof m.year === "number" && m.year >= parsed.decade.from && m.year <= parsed.decade.to){ score += 6; hit = true; }
+  if(parsed.recent && typeof m.year === "number" && m.year >= new Date().getFullYear() - 6){ score += 4; hit = true; }
+  if(parsed.length && m.kind === "anime"){
+    const fewEp = Number.isInteger(m.episodes) && m.episodes > 0 && m.episodes <= 13;
+    const manyEp = Number.isInteger(m.episodes) && m.episodes > 24;
+    const shortFmt = m.format === "MOVIE" || m.format === "OVA" || m.format === "ONA" || m.format === "SPECIAL";
+    if(parsed.length === "short" && (fewEp || shortFmt)){ score += 6; hit = true; }
+    if(parsed.length === "long" && manyEp){ score += 6; hit = true; }
+  }
+  score += tasteScore(m) * 0.5; // tiebreak toward the user's broader taste
+  return { score, hit };
+}
+
+/* candidate pool for one type: the built-in library (movies only), the
+   user's own custom/cloud-synced titles, whatever's turned up in live search
+   this session, and whatever's currently loaded as trending — the same
+   pools renderSearch() already draws its sections from, just merged and
+   deduped by id */
+function askPool(type){
+  const map = new Map();
+  const add = m => { if(m && typeOf(m.id) === type) map.set(m.id, m); };
+  if(type === "movie") Object.values(MOVIES).forEach(add);
+  S.custom.forEach(add);
+  Object.values(LIVE).forEach(add);
+  const trend = TRENDING[type];
+  if(Array.isArray(trend)) trend.forEach(add);
+  return [...map.values()];
+}
+
+/* returns null when there's no query typed, otherwise {parsed, results}.
+   An empty `results` with a non-null `parsed` is the honest "we understood
+   something but nothing in your library/trending/search cache matched it"
+   case; a query with no recognizable signal at all (hasSignal === false)
+   also lands here with empty results, so the UI gives the same honest
+   message rather than silently falling back to an unrelated taste list. */
+function runAskSearch(type){
+  const q = askQuery.trim();
+  if(!q) return null;
+  const parsed = parseAskQuery(q, type);
+  const hasSignal = !!(parsed.anchor || parsed.genres.size || parsed.dir || parsed.decade || parsed.recent || parsed.length);
+  if(!hasSignal) return { parsed, results: [] };
+  const scored = askPool(type).map(m => ({ m, ...askScore(m, parsed) })).filter(x => x.hit);
+  scored.sort((a, b) => b.score - a.score);
+  return { parsed, results: scored.slice(0, 12).map(x => x.m) };
+}
+
 function movieRowHTML(m, i){
   const ranked = isRanked(m.id), inWatch = S.watch.includes(m.id);
   // i (this row's index within whatever list it's part of) drives the
@@ -2634,10 +2843,27 @@ function renderSearch(){
       : liveState === "err" ? `<div class="empty" style="padding:22px"><p>Live catalog unreachable right now.</p></div>`
       : liveRows || `<div class="empty" style="padding:22px"><p>No catalog matches for “${esc(query)}”.</p></div>`}</div>`;
   }
+  // "Ask Reeli" — a natural-language layer over the same tab's pool, separate
+  // from the exact-title box above: parseAskQuery()/askScore() do the work,
+  // see their definitions near similarityTo() above.
+  const askQ = askQuery.trim();
+  let askHTML = "";
+  if(askQ){
+    const ask = runAskSearch(searchType);
+    const askRows = ask.results.map((m,i) => movieRowHTML(m,i)).join("");
+    askHTML = `<div class="sechead">Ask Reeli</div><div class="card shelf" style="--i:0">${
+      askRows || `<div class="empty" style="padding:22px"><p>Nothing quite matches that — try another phrase, like “like Parasite but funnier” or “90s sci-fi”.</p></div>`
+    }</div>`;
+  }
   $("#searchWrap").innerHTML = `
     <h1 class="h1">Rank anything</h1>
     <p class="sub">Movies, TV shows, anime — three separate boards, search the whole worldwide catalog.</p>
     ${tabs}
+    <div class="searchbar askbar">
+      <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
+      <input id="ask" aria-label="Ask Reeli" type="search" placeholder="Ask Reeli — “something like Parasite but funnier”…" value="${esc(askQuery)}" autocomplete="off">
+    </div>
+    ${askHTML}
     <div class="searchbar">
       <svg aria-hidden="true" width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.8-3.8"/></svg>
       <input id="q" aria-label="Search ${TYPE_LABEL[searchType].toLowerCase()}" type="search" placeholder="Search ${TYPE_LABEL[searchType].toLowerCase()}…" value="${esc(query)}" autocomplete="off">
@@ -2661,6 +2887,16 @@ function onSearchInput(inp){
   else { liveState = "idle"; liveResults = []; liveSeq++; }
   renderSearch();
   const ni = $("#q"); ni.focus(); ni.setSelectionRange(pos,pos);
+}
+/* typing in the "Ask Reeli" box: everything it does (parseAskQuery/
+   askScore/askPool, above) is local scoring over data already in memory, no
+   network round-trip, so unlike onSearchInput() it re-renders immediately
+   with no debounce. Caret handling mirrors onSearchInput(). */
+function onAskInput(inp){
+  askQuery = inp.value;
+  const pos = inp.selectionStart;
+  renderSearch();
+  const ni = $("#ask"); ni.focus(); ni.setSelectionRange(pos,pos);
 }
 
 /* ---------- watchlist ---------- */
@@ -3147,11 +3383,12 @@ function profileWrapEntryHTML(){
     </button>`;
 }
 /* full-screen wrap-up sheet — same #sheet-fills-the-viewport pattern as
-   openFullProfile() (openSheet + sheet.classList.add("full")), not a new
+   openFullProfile(): the sheet fills the viewport automatically because its
+   content's .fullprofile wrapper is what the "sheet goes full-screen" CSS
+   rule keys off of (`.sheet:has(> .fullprofile)` in styles.css) — not a new
    screen/nav entry. */
 function openYearlyWrap(){
   openSheet(yearlyWrapHTML());
-  sheet.classList.add("full");
 }
 function yearlyWrapHTML(){
   const w = wrapYearStats(), year = new Date().getUTCFullYear();
@@ -3213,8 +3450,9 @@ function shareYearlyWrap(){
 
 /* ---------- milestone celebrations: first ranking, 50th, one year on Reeli ----------
    Three genuine "pause and notice this" moments, deliberately full-screen
-   (openSheet + sheet.classList.add("full"), the same mechanism openFullProfile()
-   and openYearlyWrap() use) rather than another toast — this app already has a
+   (openSheet with a .fullprofile-wrapped body, the same mechanism openFullProfile()
+   and openYearlyWrap() use — see the `.sheet:has(> .fullprofile)` rule in
+   styles.css) rather than another toast — this app already has a
    toast for "ranking undone"/"link copied", and a milestone is meant to read as
    a bigger deal than that. See S.milestonesShown for the one-shot persistence
    and placeAt()/maybeShowMilestone() for how the first two get triggered
@@ -3277,7 +3515,6 @@ let MILESTONE_ACTIVE = null; // which one the open sheet is showing — read by 
 function openMilestoneSheet(which, refDate){
   MILESTONE_ACTIVE = which;
   openSheet(milestoneHTML(which, refDate));
-  sheet.classList.add("full");
   hydratePosters(sheet);
 }
 function closeMilestone(){ MILESTONE_ACTIVE = null; closeSheet(); }
@@ -3977,7 +4214,7 @@ const CLICK_IDS = {
 };
 
 /* text inputs that react as you type, and the avatar file picker */
-const INPUT_IDS = { q: el => onSearchInput(el), mq: el => onMateQueryInput(el) };
+const INPUT_IDS = { q: el => onSearchInput(el), mq: el => onMateQueryInput(el), ask: el => onAskInput(el) };
 const CHANGE_IDS = { pfpFile: el => uploadAvatar(el), lbFile: el => onLetterboxdFile(el) };
 /* pressing Enter in these fields submits the form they belong to (or, in the
    movie search box, skips the debounce and searches the catalog right now) */
@@ -4074,8 +4311,10 @@ function closeSheet(force){
   clearTimeout(sheetCloseT);
   sheetCloseT = setTimeout(() => {
     overlay.classList.remove("on", "closing");
+    // sheet.innerHTML = "" also drops whatever .fullprofile wrapper was inside
+    // it, so the `.sheet:has(> .fullprofile)` full-screen rule in styles.css
+    // stops matching on its own — nothing to undo by hand here.
     sheet.innerHTML = "";
-    sheet.classList.remove("full");
     sheet.removeAttribute("tabindex");
   }, reduceMotion() ? 0 : 180);
   // the opener is often inside markup a re-render has since replaced, so only
@@ -4129,6 +4368,7 @@ function openDetail(id){
            <button class="pillbtn" data-a="unrank">Remove ranking</button>`
         : `<button class="pillbtn acc" data-a="rate">Rank it</button>
            <button class="pillbtn ${inWatch?"soft":""}" data-a="watch">${inWatch ? "On watchlist ✓" : "+ Watchlist"}</button>`}
+      <a class="pillbtn" style="color:inherit;text-decoration:none;display:inline-flex;align-items:center" href="https://www.youtube.com/results?search_query=${encodeURIComponent([m.title, m.year, "trailer"].filter(Boolean).join(" "))}" target="_blank" rel="noopener">▶ Watch trailer</a>
       <button class="pillbtn" data-a="close">Close</button>
     </div>
     <div id="commWrap"></div>`);
@@ -4448,6 +4688,16 @@ function pickWallpaper(el){
 /* ---------- share sheet: native share + platform intents ---------- */
 let SHARE = null; // what the open share sheet is sharing
 function openShare(text, url){
+  if(typeof navigator.share === "function"){
+    // prefer the real OS share sheet (Messages, Mail, any installed app) over
+    // our hand-built list of destinations. Split the first line off as the
+    // share title — the rest reads as the body in a native sheet.
+    const nl = text.indexOf("\n");
+    const title = nl === -1 ? "Reeli" : text.slice(0, nl);
+    const body = nl === -1 ? text : text.slice(nl + 1);
+    navigator.share({title, text: body, url}).catch(() => {}); // user cancel -> AbortError, silently ignored
+    return;
+  }
   SHARE = {text, url};
   openSheet(`
     <h1 class="h1">Share</h1>
