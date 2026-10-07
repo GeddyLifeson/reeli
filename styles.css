@@ -677,7 +677,7 @@
     /* onboarding goes two-column */
     .auth{padding:48px 60px}
     .auth.on{display:grid;grid-template-columns:minmax(0,560px) 420px;justify-content:center;
-      grid-template-areas:"hero card" "feats card" "feats ghost" ". note";
+      grid-template-areas:"hero card" "feats card" "feats ghost" ". note" ". consent";
       column-gap:64px;row-gap:10px;align-content:center}
     .auth .hero{grid-area:hero;align-items:flex-start;text-align:left;margin-bottom:10px}
     .auth .hero .wordmark{font-size:42px}
@@ -687,4 +687,5 @@
     .authcard{grid-area:card;align-self:center;width:100%;max-width:none}
     .ghostlink{grid-area:ghost;margin:12px auto 0}
     .authnote{grid-area:note;margin:0 auto}
+    .authnote + .authnote{grid-area:consent}
   }
