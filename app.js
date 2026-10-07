@@ -3658,6 +3658,17 @@ function profileFranchisesHTML(){
           ${scoreHTML(scoreOf(id))}</button>`; }).join("")}</div>`;
   }).join("");
 }
+function profileNewsletterHTML(){
+  return `<div class="sechead">Film School Dropout</div>
+    <div class="card" style="padding:14px">
+      <div style="font-size:13.5px;line-height:1.45">The Reeli newsletter: what's coming out, hidden gems worth your night, and one bit of film history you'll repeat at parties. Free, every other week, and we'll try to make you laugh.</div>
+      <div style="display:flex;gap:8px;margin-top:12px;flex-wrap:wrap">
+        <input class="field" id="nlEmail" aria-label="Email for the newsletter" type="email" placeholder="you@example.com" autocomplete="email" maxlength="254" style="flex:1;min-width:180px;margin:0">
+        <button class="pillbtn acc" id="nlBtn">Subscribe</button>
+      </div>
+      <div style="color:var(--muted);font-size:10.5px;margin-top:8px">Unsubscribe any time from any issue. We never share your address.</div>
+    </div>`;
+}
 function profileActionsHTML(d){
   return `<div style="display:flex;gap:9px;margin-top:18px;flex-wrap:wrap">
       ${d.cloud ? `<button class="pillbtn soft" id="shareProfBtn">Share my profile</button>` : ""}
@@ -3682,6 +3693,7 @@ function profileHTML(d){
     ${tasteTwinsHTML(d)}
     ${profilePodiumHTML()}
     ${profileFranchisesHTML()}
+    ${profileNewsletterHTML()}
     ${profileActionsHTML(d)}
     <button class="danger" id="resetBtn">Reset all my data</button>
     <div style="display:flex;gap:12px;margin-top:16px">
@@ -3692,6 +3704,25 @@ function profileHTML(d){
 }
 function renderProfile(){
   $("#profileWrap").innerHTML = profileHTML(profileData());
+}
+/* Signups land in newsletter_subscribers (supabase-newsletter.sql). The table
+   has no SELECT policy, so return=minimal is required: asking for the row back
+   would 401 even though the insert itself is allowed. */
+async function subscribeNewsletter(){
+  const el = $("#nlEmail");
+  const email = el ? el.value.trim() : "";
+  if(!el || !el.checkValidity() || !email){ showAlert("That email doesn't look right — check it and try again.", "newsletter"); return; }
+  let r;
+  try{
+    r = await sb(pgPath("newsletter_subscribers"), {method:"POST", quiet:true,
+      headers:{Prefer:"return=minimal"},
+      body: JSON.stringify({email, user_id: myId(), source:"profile"})});
+  }catch(e){ logErr("newsletter signup", e); showAlert("Couldn't reach the server — try again in a moment.", "newsletter"); return; }
+  // 409 means already subscribed; it gets the same reply as a new signup so the
+  // form can't be used to check whether someone else is on the list
+  if(r.ok || r.status === 409){ el.value = ""; toast("You're in. First issue lands in your inbox soon 🎬"); return; }
+  logErr("newsletter signup -> " + r.status, null);
+  showAlert("Couldn't sign you up just now — try again in a minute.", "newsletter");
 }
 /* backup/restore, kept out of the render path so it can be reached from the
    delegated click router */
@@ -4142,6 +4173,7 @@ const CLICK_IDS = {
   exportBtn:      () => exportBackup(),
   importBtn:      () => importBackup(),
   lbImportBtn:    () => openLetterboxdImport(),
+  nlBtn:          () => subscribeNewsletter(),
   lbAuto:         () => runLetterboxdAuto(),
   lbManual:       () => runLetterboxdManual(),
   shareBtn:       () => shareTopFive(),
@@ -4219,6 +4251,7 @@ const CHANGE_IDS = { pfpFile: el => uploadAvatar(el), lbFile: el => onLetterboxd
 /* pressing Enter in these fields submits the form they belong to (or, in the
    movie search box, skips the debounce and searches the catalog right now) */
 const ENTER_IDS = { auemail: () => submitAuth(), aupass: () => submitAuth(),
+                    nlEmail: () => subscribeNewsletter(),
                     chname: () => saveClaimedHandle(), chhandle: () => saveClaimedHandle(),
                     q: el => { const qq = el.value.trim(); if(!qq) return; clearTimeout(liveT); runLiveSearch(qq); } };
 
