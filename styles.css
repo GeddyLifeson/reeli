@@ -466,15 +466,22 @@
      duration before actually tearing the sheet down, so a dismiss reads as
      the box sliding back off the shelf instead of just vanishing */
   .overlay.closing{animation:fade .18s ease reverse both}
-  .overlay.closing .sheet:not(.full){animation:up .18s ease reverse both}
+  .overlay.closing .sheet:not(:has(> .fullprofile)){animation:up .18s ease reverse both}
   .grab{width:40px;height:4px;border-radius:2px;background:var(--line);margin:0 auto 16px}
   .sheet .h1{font-size:20px}
 
   /* full-screen profile view: same #sheet element, just filling the viewport
-     instead of drawing a bottom drawer. .sheet.full has higher specificity
-     than every plain .sheet rule above (and the desktop one below), so it
-     always wins regardless of source order or viewport width. */
-  .sheet.full{max-width:none;width:100%;height:100dvh;min-height:100dvh;max-height:100dvh;
+     instead of drawing a bottom drawer. Keyed off :has(), not a JS-toggled
+     class — every full view's body is wrapped in .fullprofile (openFullProfile,
+     openYearlyWrap, openMilestoneSheet), so the sheet going full-screen is a
+     direct consequence of what's rendered inside it, not a separate flag app.js
+     has to remember to set and unset in sync with that markup. Falls back
+     gracefully in a browser without :has() support: the content still renders,
+     just in a regular bottom-drawer sheet instead of filling the viewport.
+     `:has(> .fullprofile)` has the same specificity as a single class, so it
+     still beats every plain .sheet rule above (and the desktop one below)
+     regardless of source order or viewport width. */
+  .sheet:has(> .fullprofile){max-width:none;width:100%;height:100dvh;min-height:100dvh;max-height:100dvh;
     border-radius:0;padding:0;margin:0;animation:none;overflow-y:auto;border-top:none}
   .fullprofile{min-height:100dvh;padding:20px 20px calc(20px + env(safe-area-inset-bottom));
     background-color:var(--bg);background-size:cover;background-position:center top}
