@@ -166,6 +166,13 @@
   @keyframes slideOutR{to{transform:translateX(100%)}}
   @keyframes slideInL{from{transform:translateX(-100%)}to{transform:none}}
   @keyframes slideInR{from{transform:translateX(100%)}to{transform:none}}
+  /* native View Transitions path (nav() in app.js) — same tab switch as the
+     slide above, but on browsers that support document.startViewTransition()
+     the browser snapshots/cross-fades the two screens itself instead of us
+     toggling slide classes. Only tune the timing/easing to match the rest of
+     the app's quick snap; the default UA cross-fade is otherwise left alone
+     rather than reinventing it with view-transition-name morphs. */
+  ::view-transition-old(root),::view-transition-new(root){animation-duration:.19s;animation-timing-function:ease}
   /* the general-purpose "just arrived" entrance — chips, feed cards, stat
      tiles all use this so a re-rendered screen feels like it's being placed
      down rather than just appearing */

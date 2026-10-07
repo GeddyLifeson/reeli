@@ -765,7 +765,22 @@ function nav(to){
   document.querySelectorAll(".screen").forEach(s =>
     s.classList.remove("slide-out-l", "slide-out-r", "slide-in-l", "slide-in-r"));
 
-  if(switching && !REDUCE_MOTION){
+  // progressive enhancement: where the browser supports it, let the native
+  // View Transitions API cross-fade the two screens itself (snapshot old DOM,
+  // run the swap, snapshot new DOM, animate between them) instead of the
+  // hand-built slide-class/setTimeout dance below. Still gated on REDUCE_MOTION
+  // first so `prefers-reduced-motion` turns off ANY transition, native or not;
+  // Firefox and older browsers (no startViewTransition) always fall through to
+  // the existing slide, which is why that code stays — this is additive, not a
+  // replacement.
+  const nativeTransition = switching && !REDUCE_MOTION && typeof document.startViewTransition === "function";
+
+  if(nativeTransition){
+    document.startViewTransition(() => {
+      document.querySelectorAll(".screen").forEach(s => s.classList.remove("on"));
+      toEl.classList.add("on");
+    });
+  } else if(switching && !REDUCE_MOTION){
     // "which aisle is further right" — slide toward the tab you tapped
     const fromEl = $("#scr-"+from);
     const forward = NAV_ORDER.indexOf(to) > NAV_ORDER.indexOf(from);
