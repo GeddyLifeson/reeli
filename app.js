@@ -476,12 +476,63 @@ function watchLinks(m){
     links.push(["Showtimes", `https://www.fandango.com/search?q=${q}`]);
   return links;
 }
+/* real availability from the where-to-watch Edge Function (Streaming
+   Availability API, cached server-side). WATCH[id] holds the answer for this
+   session: an array of {service,name,type,link,price} once known, "x" when the
+   lookup failed or found nothing (search links stay), absent while unasked. */
+const WATCH = {};
+const WATCH_GROUPS = [["Stream", ["subscription","free","addon"]], ["Rent", ["rent"]], ["Buy", ["buy"]]];
+function watchTT(m){
+  if(m.kind === "anime") return null; // AniList ids, not in the IMDb-keyed catalog
+  if(/^tt\d+$/.test(m.id)) return m.id;
+  const c = cacheEntry(m.id);
+  return c && c.tt ? c.tt : null;
+}
+function affiliateLink(href){
+  try{
+    const u = new URL(href);
+    if(AFFILIATE.appleToken && u.hostname === "tv.apple.com") u.searchParams.set("at", AFFILIATE.appleToken);
+    if(AFFILIATE.amazonTag && /(^|\.)amazon\.com$/.test(u.hostname)) u.searchParams.set("tag", AFFILIATE.amazonTag);
+    return u.href;
+  }catch(e){ return href; }
+}
+function loadWatch(m){
+  const tt = watchTT(m);
+  if(!tt || !BACKEND.enabled || WATCH[m.id]) return;
+  WATCH[m.id] = "pending";
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 8000);
+  fetch(SUPA_URL + "/functions/v1/where-to-watch", {method:"POST", signal: ctl.signal,
+    headers:{apikey:SUPA_KEY, Authorization:"Bearer " + SUPA_KEY, "Content-Type":"application/json"},
+    body: JSON.stringify({id: tt, country: "us"})})
+    .then(r => r.ok ? r.json() : null)
+    .catch(() => null)
+    .then(d => {
+      clearTimeout(t);
+      WATCH[m.id] = d && Array.isArray(d.options) && d.options.length ? d.options : "x";
+      const el = document.getElementById("whereWatch");
+      if(el && detailId === m.id && overlay.classList.contains("on")) el.outerHTML = watchLinksHTML(m);
+    });
+}
 function watchLinksHTML(m){
+  const opts = Array.isArray(WATCH[m.id]) ? WATCH[m.id] : null;
   const earns = !!(AFFILIATE.amazonTag || AFFILIATE.appleToken);
-  return `<div class="wherewatch">
+  const pill = (name, href, extra) =>
+    `<a class="pillbtn" href="${esc(href)}" target="_blank" rel="noopener sponsored">${esc(name)}${extra ? ` <span class="wprice">${esc(extra)}</span>` : ""} ↗</a>`;
+  let body;
+  if(opts){
+    const seen = new Set();
+    body = WATCH_GROUPS.map(([label, types]) => {
+      const row = opts.filter(o => types.includes(o.type) && !seen.has(o.service + label) && seen.add(o.service + label));
+      return row.length ? `<div class="wgroup"><span class="wlabel">${label}</span><div class="wlinks">${
+        row.map(o => pill(o.name, affiliateLink(o.link), o.type === "free" ? "free" : o.price)).join("")}</div></div>` : "";
+    }).join("") + `<p class="wdisc">Streaming data by <a href="https://www.movieofthenight.com/about/api" target="_blank" rel="noopener">Movie of the Night</a>.</p>`;
+  } else {
+    body = `<div class="wlinks">${watchLinks(m).map(([name, href]) => pill(name, href)).join("")}</div>`;
+  }
+  return `<div class="wherewatch" id="whereWatch">
     <div class="step">Where to watch</div>
-    <div class="wlinks">${watchLinks(m).map(([name, href]) =>
-      `<a class="pillbtn" href="${esc(href)}" target="_blank" rel="noopener sponsored">${esc(name)} ↗</a>`).join("")}</div>
+    ${body}
     ${earns ? `<p class="wdisc">Reeli may earn a commission when you rent or buy through these links.</p>` : ""}
   </div>`;
 }
@@ -4461,6 +4512,7 @@ function openDetail(id){
     ${watchLinksHTML(m)}
     <div id="commWrap"></div>`);
   if(BACKEND.enabled) loadCommunityScores(id);
+  loadWatch(m);
 }
 /* the detail sheet's action bar. detailId is the movie the sheet is showing,
    so the buttons no longer need to capture it. */
