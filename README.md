@@ -92,6 +92,13 @@ the deploy instead of publishing over a working site.
 > must be **GitHub Actions**. While it is still "Deploy from a branch", pushes
 > publish directly and the test gate does nothing.
 
+`.github/workflows/supabase-keepalive.yml` is unrelated to the above — it
+pings the Supabase project's REST API twice a week so the free tier's
+~7-day inactivity auto-pause never triggers. If the backend (accounts,
+sync, OAuth) ever goes fully unreachable anyway, check the project's status
+in the Supabase dashboard; a paused project needs a manual "Resume" click,
+which this workflow can't do on its own.
+
 ## Database
 
 Run these in the Supabase SQL editor, in a fresh tab each:
