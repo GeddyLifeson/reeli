@@ -455,6 +455,37 @@ function posterHTML(m, size){
     <span class="init">${esc(initials(m.title))}</span><span class="yr">${m.year}</span>${img}</div>`;
 }
 
+/* ---------- where to watch (affiliate links) ----------
+   Search links out to the places people actually rent, buy, or stream a title.
+   They work with the IDs left blank; fill one in and that store's link starts
+   carrying it so purchases through Reeli earn a commission.
+     amazonTag  — Amazon Associates tracking ID, e.g. "reeli-20"
+     appleToken — Apple Services Performance Partners affiliate token ("at") */
+const AFFILIATE = { amazonTag: "", appleToken: "" };
+function watchLinks(m){
+  const q = encodeURIComponent(m.title);
+  const qy = encodeURIComponent([m.title, m.year !== "—" ? m.year : ""].filter(Boolean).join(" "));
+  const links = [
+    ["JustWatch", `https://www.justwatch.com/us/search?q=${q}`],
+    ["Prime Video", `https://www.amazon.com/s?k=${qy}&i=instant-video${AFFILIATE.amazonTag ? `&tag=${encodeURIComponent(AFFILIATE.amazonTag)}` : ""}`],
+    ["Apple TV", `https://tv.apple.com/search?term=${q}${AFFILIATE.appleToken ? `&at=${encodeURIComponent(AFFILIATE.appleToken)}` : ""}`],
+  ];
+  if(m.kind === "anime") links.push(["Crunchyroll", `https://www.crunchyroll.com/search?q=${q}`]);
+  // a movie from this year or last may still be in theaters
+  if(!m.kind && typeof m.year === "number" && m.year >= new Date().getFullYear() - 1)
+    links.push(["Showtimes", `https://www.fandango.com/search?q=${q}`]);
+  return links;
+}
+function watchLinksHTML(m){
+  const earns = !!(AFFILIATE.amazonTag || AFFILIATE.appleToken);
+  return `<div class="wherewatch">
+    <div class="step">Where to watch</div>
+    <div class="wlinks">${watchLinks(m).map(([name, href]) =>
+      `<a class="pillbtn" href="${esc(href)}" target="_blank" rel="noopener sponsored">${esc(name)} ↗</a>`).join("")}</div>
+    ${earns ? `<p class="wdisc">Reeli may earn a commission when you rent or buy through these links.</p>` : ""}
+  </div>`;
+}
+
 /* ---------- Cinemeta (free, keyless, worldwide IMDb-backed catalog) ----------
    Stremio's public metadata API: live catalog search, real posters, and a
    per-title meta endpoint (genres, director, description, IMDb rating).
@@ -1991,6 +2022,12 @@ function termsHTML(){
     copyright and trademark holders. They're shown for identification purposes only —
     to tell you which title you're ranking. Reeli isn't affiliated with, and isn't
     endorsed by, any studio, distributor, or the catalogs it queries.</p>
+
+    <h2>Affiliate links</h2>
+    <p>The "Where to watch" links on a title open stores and streaming services
+    (such as Amazon, Apple TV, and JustWatch). Some of these are affiliate links: if
+    you rent or buy something after following one, Reeli may earn a commission at no
+    extra cost to you. Those purchases happen on the other site, under its terms.</p>
 
     <h2>No warranty</h2>
     <p>Reeli is provided "as is." We try to keep it accurate and working, but can't
@@ -4421,6 +4458,7 @@ function openDetail(id){
       <a class="pillbtn" style="color:inherit;text-decoration:none;display:inline-flex;align-items:center" href="https://www.youtube.com/results?search_query=${encodeURIComponent([m.title, m.year, "trailer"].filter(Boolean).join(" "))}" target="_blank" rel="noopener">▶ Watch trailer</a>
       <button class="pillbtn" data-a="close">Close</button>
     </div>
+    ${watchLinksHTML(m)}
     <div id="commWrap"></div>`);
   if(BACKEND.enabled) loadCommunityScores(id);
 }

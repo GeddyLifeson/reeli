@@ -546,6 +546,10 @@
   .dhead h2{font-family:var(--display);font-size:21px;margin:0 0 4px;line-height:1.2;text-wrap:balance}
   .dhead .d{color:var(--muted);font-size:13px;line-height:1.5}
   .dactions{display:flex;gap:9px;flex-wrap:wrap;margin-top:6px}
+  .wherewatch{margin-top:16px}
+  .wlinks{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+  .wlinks .pillbtn{color:inherit;text-decoration:none;display:inline-flex;align-items:center}
+  .wdisc{font-size:11.5px;opacity:.65;margin:8px 0 0}
   /* a changed number gets a brief gold flash-and-settle instead of just
      silently being different — the rewatch counter (logged another watch)
      wraps its digit in this on every re-render, and since the detail sheet
